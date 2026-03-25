@@ -1,0 +1,494 @@
+---
+# Simple mock services with chaos injection capability
+# These use the chaos-service image for controlled failure scenarios
+
+---
+# Gateway Deployment (chaos-enabled service)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: loadgen
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      containers:
+      - name: gateway
+        image: chaos-service:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: SERVICE_NAME
+          value: "gateway"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+# Gateway Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: loadgen
+spec:
+  selector:
+    app: gateway
+  type: LoadBalancer
+  ports:
+  - port: 8080
+    targetPort: 8080
+
+---
+# Auth Service (chaos-enabled)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  namespace: loadgen
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: auth-service
+  template:
+    metadata:
+      labels:
+        app: auth-service
+    spec:
+      containers:
+      - name: auth-service
+        image: chaos-service:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+        env:
+        - name: SERVICE_NAME
+          value: "auth-service"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+
+---
+# Auth Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+  namespace: loadgen
+spec:
+  selector:
+    app: auth-service
+  ports:
+  - port: 8080
+    targetPort: 8080
+
+---
+# User Service (chaos-enabled)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service
+  namespace: loadgen
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: user-service
+  template:
+    metadata:
+      labels:
+        app: user-service
+    spec:
+      containers:
+      - name: user-service
+        image: chaos-service:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+        env:
+        - name: SERVICE_NAME
+          value: "user-service"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+
+---
+# User Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-service
+  namespace: loadgen
+spec:
+  selector:
+    app: user-service
+  ports:
+  - port: 8080
+    targetPort: 8080
+
+---
+# Order Service (chaos-enabled)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+  namespace: loadgen
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: order-service
+  template:
+    metadata:
+      labels:
+        app: order-service
+    spec:
+      containers:
+      - name: order-service
+        image: chaos-service:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+        env:
+        - name: SERVICE_NAME
+          value: "order-service"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+
+---
+# Order Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-service
+  namespace: loadgen
+spec:
+  selector:
+    app: order-service
+  ports:
+  - port: 8080
+    targetPort: 8080
+
+---
+# Payment Service (chaos-enabled)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+  namespace: loadgen
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payment-service
+  template:
+    metadata:
+      labels:
+        app: payment-service
+    spec:
+      containers:
+      - name: payment-service
+        image: chaos-service:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+        env:
+        - name: SERVICE_NAME
+          value: "payment-service"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+
+---
+# Payment Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+  namespace: loadgen
+spec:
+  selector:
+    app: payment-service
+  ports:
+  - port: 8080
+    targetPort: 8080
+
+---
+# Notification Worker (chaos-enabled)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-worker
+  namespace: loadgen
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notification-worker
+  template:
+    metadata:
+      labels:
+        app: notification-worker
+    spec:
+      containers:
+      - name: notification-worker
+        image: chaos-service:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+        env:
+        - name: SERVICE_NAME
+          value: "notification-worker"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+
+---
+# Notification Worker Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-worker
+  namespace: loadgen
+spec:
+  selector:
+    app: notification-worker
+  ports:
+  - port: 8080
+    targetPort: 8080
+
+---
+# OpenTelemetry SDK Instrumented Load Generator
+# This pod continuously sends OTEL telemetry to the collector
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: load-generator-script
+  namespace: loadgen
+data:
+  generator.py: |
+    #!/usr/bin/env python3
+    import random
+    import time
+    import json
+    import threading
+    from urllib.request import urlopen, Request
+    from urllib.error import URLError
+
+    OTEL_ENDPOINT = "http://otel-collector.loadgen.svc.cluster.local:4318"
+    SERVICES = ["gateway", "auth-service", "user-service", "order-service", "payment-service", "notification-worker"]
+    METRICS = ["http_request_duration_seconds", "http_requests_total", "db_query_duration_seconds", "cache_hit_ratio", "error_rate", "cpu_usage_percent", "memory_usage_mb"]
+
+    # Track chaos state per service
+    chaos_state = {}
+    chaos_lock = threading.Lock()
+
+    def check_chaos_status():
+        """Poll each service's /chaos/status endpoint every 5 seconds"""
+        while True:
+            for svc in SERVICES:
+                try:
+                    url = f"http://{svc}.loadgen.svc.cluster.local:8080/chaos/status"
+                    req = Request(url, method="GET")
+                    with urlopen(req, timeout=2) as resp:
+                        data = json.loads(resp.read().decode())
+                        with chaos_lock:
+                            chaos_state[svc] = data
+                except Exception:
+                    pass
+            time.sleep(5)
+
+    def get_chaos_for_service(service):
+        """Get the current chaos config for a service"""
+        with chaos_lock:
+            state = chaos_state.get(service, {})
+        if state.get("active", False):
+            return state.get("type", ""), state.get("intensity", 0)
+        return None, 0
+
+    def generate_value(service, metric_name):
+        """Generate metric value, amplified when chaos is active"""
+        chaos_type, intensity = get_chaos_for_service(service)
+
+        # Normal baseline values (tight range for stable baseline)
+        baselines = {
+            "http_request_duration_seconds": (0.05, 0.3),
+            "http_requests_total": (100, 500),
+            "db_query_duration_seconds": (0.01, 0.1),
+            "cache_hit_ratio": (0.85, 0.99),
+            "error_rate": (0.001, 0.02),
+            "cpu_usage_percent": (10, 40),
+            "memory_usage_mb": (200, 500),
+        }
+
+        low, high = baselines.get(metric_name, (0.1, 1.0))
+        value = random.uniform(low, high)
+
+        if chaos_type is None:
+            return value
+
+        # Chaos is active - generate anomalous values based on type
+        factor = intensity / 100.0  # 0.0 to 1.0
+
+        if chaos_type == "latency":
+            if metric_name == "http_request_duration_seconds":
+                value = random.uniform(2.0, 15.0) * factor + value
+            elif metric_name == "http_requests_total":
+                value = value * (1.0 - 0.5 * factor)  # throughput drops
+            elif metric_name == "db_query_duration_seconds":
+                value = random.uniform(0.5, 5.0) * factor + value
+
+        elif chaos_type == "errors":
+            if metric_name == "error_rate":
+                value = random.uniform(0.3, 0.9) * factor
+            elif metric_name == "http_requests_total":
+                value = value * (1.0 - 0.3 * factor)
+            elif metric_name == "http_request_duration_seconds":
+                value = random.uniform(1.0, 5.0) * factor + value
+
+        elif chaos_type == "cpu":
+            if metric_name == "cpu_usage_percent":
+                value = random.uniform(80, 100) * factor
+            elif metric_name == "http_request_duration_seconds":
+                value = random.uniform(0.5, 3.0) * factor + value
+
+        elif chaos_type == "memory":
+            if metric_name == "memory_usage_mb":
+                value = random.uniform(1500, 4000) * factor
+            elif metric_name == "cpu_usage_percent":
+                value = random.uniform(50, 80) * factor
+
+        return round(value, 6)
+
+    def send_metric(service, metric_name, value):
+        """Send OTLP metric to collector"""
+        payload = {
+            "resourceMetrics": [{
+                "resource": {
+                    "attributes": [
+                        {"key": "service.name", "value": {"stringValue": service}},
+                        {"key": "service_id", "value": {"stringValue": service}},
+                        {"key": "environment", "value": {"stringValue": "production"}}
+                    ]
+                },
+                "scopeMetrics": [{
+                    "metrics": [{
+                        "name": metric_name,
+                        "gauge": {
+                            "dataPoints": [{
+                                "attributes": [
+                                    {"key": "service_id", "value": {"stringValue": service}},
+                                    {"key": "environment", "value": {"stringValue": "production"}}
+                                ],
+                                "timeUnixNano": str(int(time.time() * 1e9)),
+                                "asDouble": value
+                            }]
+                        }
+                    }]
+                }]
+            }]
+        }
+        try:
+            data = json.dumps(payload).encode('utf-8')
+            req = Request(f"{OTEL_ENDPOINT}/v1/metrics", data=data, headers={"Content-Type": "application/json"}, method="POST")
+            with urlopen(req, timeout=5) as response:
+                pass
+        except URLError as e:
+            pass
+
+    def generator_thread():
+        """Continuously generate telemetry"""
+        while True:
+            service = random.choice(SERVICES)
+            metric = random.choice(METRICS)
+            value = generate_value(service, metric)
+            send_metric(service, metric, value)
+            time.sleep(0.1)
+
+    print("Started Chaos-Aware OTEL Load Generator")
+
+    # Start chaos status poller
+    chaos_thread = threading.Thread(target=check_chaos_status, daemon=True)
+    chaos_thread.start()
+
+    # Start metric generator threads
+    threads = []
+    for i in range(7):
+        t = threading.Thread(target=generator_thread, daemon=True)
+        t.start()
+        threads.append(t)
+
+    # Periodic status logging
+    try:
+        while True:
+            with chaos_lock:
+                active = {k: v for k, v in chaos_state.items() if v.get("active")}
+            if active:
+                print(f"Active chaos: {json.dumps({k: v.get('type') for k, v in active.items()})}")
+            time.sleep(30)
+    except KeyboardInterrupt:
+        print("Stopped")
+
+---
+# Load Generator Pod
+apiVersion: v1
+kind: Pod
+metadata:
+  name: otel-load-generator
+  namespace: loadgen
+spec:
+  containers:
+  - name: generator
+    image: python:3.11-slim
+    command: ["python", "/generator/generator.py"]
+    volumeMounts:
+    - name: script
+      mountPath: /generator
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+  volumes:
+  - name: script
+    configMap:
+      name: load-generator-script
+      defaultMode: 0755
+  restartPolicy: Always

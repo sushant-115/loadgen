@@ -1,0 +1,313 @@
+version: "3.8"
+
+x-service-common: &service-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  networks:
+    - loadgen
+
+x-otel-env: &otel-env
+  OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+  OTEL_INSECURE: "true"
+
+services:
+  # ---------------------------------------------------------------------------
+  # Infrastructure
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: loadgen
+      POSTGRES_PASSWORD: loadgen
+      POSTGRES_DB: loadgen
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loadgen"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - loadgen
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - loadgen
+
+  nats:
+    image: nats:2-alpine
+    ports:
+      - "4222:4222"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    command: ["--http_port", "8222"]
+    networks:
+      - loadgen
+
+  # ---------------------------------------------------------------------------
+  # Observability Stack
+  # ---------------------------------------------------------------------------
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    ports:
+      - "4317:4317"   # gRPC
+      - "4318:4318"   # HTTP
+      - "8888:8888"   # Collector metrics
+      - "8889:8889"   # Prometheus exporter
+    volumes:
+      - ./configs/otel-collector.yaml:/etc/otelcol-contrib/config.yaml
+    depends_on:
+      - jaeger
+      - loki
+    networks:
+      - loadgen
+
+  prometheus:
+    image: prom/prometheus:v2.50.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./configs/prometheus.yml:/etc/prometheus/prometheus.yml
+      - promdata:/prometheus
+    depends_on:
+      - otel-collector
+    networks:
+      - loadgen
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    ports:
+      - "16686:16686"  # UI
+      - "14268:14268"  # Collector HTTP
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    networks:
+      - loadgen
+
+  loki:
+    image: grafana/loki:2.9.4
+    ports:
+      - "3100:3100"
+    networks:
+      - loadgen
+
+  grafana:
+    image: grafana/grafana:10.3.1
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    volumes:
+      - ./configs/grafana/provisioning:/etc/grafana/provisioning
+      - grafanadata:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - jaeger
+      - loki
+    networks:
+      - loadgen
+
+  # ---------------------------------------------------------------------------
+  # Application Services
+  # ---------------------------------------------------------------------------
+  gateway:
+    <<: *service-common
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: gateway
+    ports:
+      - "8080:8080"
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: gateway
+      SERVICE_PORT: "8080"
+      AUTH_SERVICE_URL: http://auth-service:8081
+      USER_SERVICE_URL: http://user-service:8082
+      ORDER_SERVICE_URL: http://order-service:8083
+    depends_on:
+      auth-service:
+        condition: service_started
+      user-service:
+        condition: service_started
+      order-service:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+
+  auth-service:
+    <<: *service-common
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: auth-service
+    ports:
+      - "8081:8080"
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: auth-service
+      SERVICE_PORT: "8080"
+      POSTGRES_DSN: postgres://loadgen:loadgen@postgres:5432/loadgen?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  user-service:
+    <<: *service-common
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: user-service
+    ports:
+      - "8082:8080"
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: user-service
+      SERVICE_PORT: "8080"
+      POSTGRES_DSN: postgres://loadgen:loadgen@postgres:5432/loadgen?sslmode=disable
+      REDIS_URL: redis://redis:6379/1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  order-service:
+    <<: *service-common
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: order-service
+    ports:
+      - "8083:8080"
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: order-service
+      SERVICE_PORT: "8080"
+      POSTGRES_DSN: postgres://loadgen:loadgen@postgres:5432/loadgen?sslmode=disable
+      REDIS_URL: redis://redis:6379/2
+      NATS_URL: nats://nats:4222
+      PAYMENT_SERVICE_URL: http://payment-service:8084
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      payment-service:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+
+  payment-service:
+    <<: *service-common
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: payment-service
+    ports:
+      - "8084:8080"
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: payment-service
+      SERVICE_PORT: "8080"
+      POSTGRES_DSN: postgres://loadgen:loadgen@postgres:5432/loadgen?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  notification-worker:
+    <<: *service-common
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: notification-worker
+    ports:
+      - "8085:8080"
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: notification-worker
+      SERVICE_PORT: "8080"
+      POSTGRES_DSN: postgres://loadgen:loadgen@postgres:5432/loadgen?sslmode=disable
+      NATS_URL: nats://nats:4222
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  # ---------------------------------------------------------------------------
+  # Nginx Reverse Proxy
+  # ---------------------------------------------------------------------------
+  nginx:
+    image: nginx:1.25-alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./configs/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - gateway
+    networks:
+      - loadgen
+
+  # ---------------------------------------------------------------------------
+  # Traffic Generator
+  # ---------------------------------------------------------------------------
+  traffic-generator:
+    <<: *service-common
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: traffic-generator
+    environment:
+      TARGET_URL: http://gateway:8080
+      REQUESTS_PER_SECOND: "10"
+    depends_on:
+      gateway:
+        condition: service_started
+
+volumes:
+  pgdata:
+  promdata:
+  grafanadata:
+
+networks:
+  loadgen:
+    driver: bridge

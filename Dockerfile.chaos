@@ -1,0 +1,28 @@
+# Chaos Service Dockerfile
+FROM golang:1.25.0-alpine AS builder
+
+RUN apk add --no-cache git ca-certificates tzdata
+
+WORKDIR /src
+
+COPY cmd/chaos-service/go.mod ./
+
+# Initialize go.sum if needed
+RUN go mod tidy 2>/dev/null || true
+
+COPY cmd/chaos-service/main.go .
+
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w" \
+    -o /out/chaos-service .
+
+# Runtime stage
+FROM alpine:3.19
+
+RUN apk add --no-cache ca-certificates tzdata
+
+COPY --from=builder /out/chaos-service /app/chaos-service
+
+EXPOSE 8080
+
+CMD ["/app/chaos-service"]
