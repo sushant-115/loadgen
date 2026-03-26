@@ -173,8 +173,8 @@ func handleChaos(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleStatus(w http.ResponseWriter, r *http.Request) {
+	active := isChaosActive()
 	chaosState.mu.Lock()
-	active := chaosState.active
 	chaosType := chaosState.chaosType
 	intensity := chaosState.intensity
 	elapsed := time.Since(chaosState.startTime).Seconds()

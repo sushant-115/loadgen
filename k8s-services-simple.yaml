@@ -362,36 +362,52 @@ data:
         if chaos_type is None:
             return value
 
-        # Chaos is active - generate anomalous values based on type
+        # Chaos is active - ALL metrics shift dramatically to affect embeddings
         factor = intensity / 100.0  # 0.0 to 1.0
 
-        if chaos_type == "latency":
-            if metric_name == "http_request_duration_seconds":
-                value = random.uniform(2.0, 15.0) * factor + value
-            elif metric_name == "http_requests_total":
-                value = value * (1.0 - 0.5 * factor)  # throughput drops
-            elif metric_name == "db_query_duration_seconds":
-                value = random.uniform(0.5, 5.0) * factor + value
+        # Universal chaos effects (affect ALL metrics to shift embedding vector)
+        chaos_multipliers = {
+            "latency": {
+                "http_request_duration_seconds": lambda v, f: random.uniform(5.0, 30.0) * f,
+                "http_requests_total": lambda v, f: v * (0.1 + 0.2 * (1-f)),
+                "db_query_duration_seconds": lambda v, f: random.uniform(2.0, 15.0) * f,
+                "cache_hit_ratio": lambda v, f: random.uniform(0.1, 0.4) * (1-f) + 0.05,
+                "error_rate": lambda v, f: random.uniform(0.1, 0.5) * f,
+                "cpu_usage_percent": lambda v, f: random.uniform(60, 95) * f,
+                "memory_usage_mb": lambda v, f: random.uniform(800, 2000) * f,
+            },
+            "errors": {
+                "http_request_duration_seconds": lambda v, f: random.uniform(3.0, 20.0) * f,
+                "http_requests_total": lambda v, f: v * (0.2 + 0.3 * (1-f)),
+                "db_query_duration_seconds": lambda v, f: random.uniform(1.0, 8.0) * f,
+                "cache_hit_ratio": lambda v, f: random.uniform(0.05, 0.3),
+                "error_rate": lambda v, f: random.uniform(0.3, 0.95) * f,
+                "cpu_usage_percent": lambda v, f: random.uniform(70, 99) * f,
+                "memory_usage_mb": lambda v, f: random.uniform(1000, 3000) * f,
+            },
+            "cpu": {
+                "http_request_duration_seconds": lambda v, f: random.uniform(2.0, 10.0) * f,
+                "http_requests_total": lambda v, f: v * (0.3 + 0.3 * (1-f)),
+                "db_query_duration_seconds": lambda v, f: random.uniform(0.5, 5.0) * f,
+                "cache_hit_ratio": lambda v, f: random.uniform(0.2, 0.5),
+                "error_rate": lambda v, f: random.uniform(0.05, 0.3) * f,
+                "cpu_usage_percent": lambda v, f: random.uniform(85, 100),
+                "memory_usage_mb": lambda v, f: random.uniform(600, 1500) * f,
+            },
+            "memory": {
+                "http_request_duration_seconds": lambda v, f: random.uniform(1.0, 8.0) * f,
+                "http_requests_total": lambda v, f: v * (0.4 + 0.3 * (1-f)),
+                "db_query_duration_seconds": lambda v, f: random.uniform(0.3, 3.0) * f,
+                "cache_hit_ratio": lambda v, f: random.uniform(0.3, 0.6),
+                "error_rate": lambda v, f: random.uniform(0.02, 0.2) * f,
+                "cpu_usage_percent": lambda v, f: random.uniform(50, 85) * f,
+                "memory_usage_mb": lambda v, f: random.uniform(2000, 4000),
+            },
+        }
 
-        elif chaos_type == "errors":
-            if metric_name == "error_rate":
-                value = random.uniform(0.3, 0.9) * factor
-            elif metric_name == "http_requests_total":
-                value = value * (1.0 - 0.3 * factor)
-            elif metric_name == "http_request_duration_seconds":
-                value = random.uniform(1.0, 5.0) * factor + value
-
-        elif chaos_type == "cpu":
-            if metric_name == "cpu_usage_percent":
-                value = random.uniform(80, 100) * factor
-            elif metric_name == "http_request_duration_seconds":
-                value = random.uniform(0.5, 3.0) * factor + value
-
-        elif chaos_type == "memory":
-            if metric_name == "memory_usage_mb":
-                value = random.uniform(1500, 4000) * factor
-            elif metric_name == "cpu_usage_percent":
-                value = random.uniform(50, 80) * factor
+        type_map = chaos_multipliers.get(chaos_type, {})
+        if metric_name in type_map:
+            value = type_map[metric_name](value, factor)
 
         return round(value, 6)
 
