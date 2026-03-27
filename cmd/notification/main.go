@@ -139,7 +139,7 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(stats.snapshot())
 	})
-	chaos.RegisterRoutes(mux)
+	chaos.RegisterChaosEndpoints(mux)
 
 	srv := &http.Server{
 		Addr:    ":8085",
@@ -201,8 +201,11 @@ func handleOrderCreated(ctx context.Context, msg platform.Message) error {
 		"type", notifType,
 	)
 
-	// Inject chaos.
-	chaos.Get().InjectLatency()
+	// Inject chaos latency.
+	if chaos.IsActive(chaos.LatencyInjection) {
+		delay := time.Duration(float64(500*time.Millisecond) * chaos.GetIntensity(chaos.LatencyInjection))
+		time.Sleep(delay)
+	}
 
 	// Simulate processing 50-500ms.
 	start := time.Now()
@@ -214,7 +217,7 @@ func handleOrderCreated(ctx context.Context, msg platform.Message) error {
 	dur := time.Since(start)
 	status := "sent"
 
-	if !success || chaos.Get().ShouldError() {
+	if !success || chaos.IsActive(chaos.ErrorInjection) {
 		success = false
 		status = "failed"
 		slog.ErrorContext(ctx, "notification failed",

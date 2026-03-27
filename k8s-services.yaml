@@ -38,7 +38,7 @@ spec:
           name: http
         env:
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
-          value: "http://otel-collector.loadgen.svc.cluster.local:4318"
+          value: "otel-collector.loadgen.svc.cluster.local:4317"
         - name: OTEL_INSECURE
           value: "true"
         - name: OTEL_SERVICE_NAME
@@ -108,18 +108,18 @@ spec:
       - name: auth-service
         image: loadgen:latest
         imagePullPolicy: Never
-        args: ["/app/auth-service"]
+        args: ["/app/auth"]
         ports:
-        - containerPort: 8080
+        - containerPort: 8081
         env:
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
-          value: "http://otel-collector.loadgen.svc.cluster.local:4318"
+          value: "otel-collector.loadgen.svc.cluster.local:4317"
         - name: OTEL_INSECURE
           value: "true"
         - name: OTEL_SERVICE_NAME
           value: auth-service
         - name: SERVICE_PORT
-          value: "8080"
+          value: "8081"
         - name: POSTGRES_DSN
           value: "postgres://loadgen:loadgen@postgres.loadgen.svc.cluster.local:5432/loadgen?sslmode=disable"
         - name: REDIS_URL
@@ -127,13 +127,13 @@ spec:
         livenessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 8081
           initialDelaySeconds: 10
           periodSeconds: 10
         readinessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 8081
           initialDelaySeconds: 5
           periodSeconds: 5
 
@@ -149,7 +149,7 @@ spec:
     app: auth-service
   ports:
   - port: 8080
-    targetPort: 8080
+    targetPort: 8081
 
 ---
 # User Service Deployment
@@ -180,18 +180,18 @@ spec:
       - name: user-service
         image: loadgen:latest
         imagePullPolicy: Never
-        args: ["/app/user-service"]
+        args: ["/app/user"]
         ports:
-        - containerPort: 8080
+        - containerPort: 8082
         env:
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
-          value: "http://otel-collector.loadgen.svc.cluster.local:4318"
+          value: "otel-collector.loadgen.svc.cluster.local:4317"
         - name: OTEL_INSECURE
           value: "true"
         - name: OTEL_SERVICE_NAME
           value: user-service
         - name: SERVICE_PORT
-          value: "8080"
+          value: "8082"
         - name: POSTGRES_DSN
           value: "postgres://loadgen:loadgen@postgres.loadgen.svc.cluster.local:5432/loadgen?sslmode=disable"
         - name: REDIS_URL
@@ -199,13 +199,13 @@ spec:
         livenessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 8082
           initialDelaySeconds: 10
           periodSeconds: 10
         readinessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 8082
           initialDelaySeconds: 5
           periodSeconds: 5
 
@@ -221,7 +221,7 @@ spec:
     app: user-service
   ports:
   - port: 8080
-    targetPort: 8080
+    targetPort: 8082
 
 ---
 # Order Service Deployment
@@ -255,18 +255,18 @@ spec:
       - name: order-service
         image: loadgen:latest
         imagePullPolicy: Never
-        args: ["/app/order-service"]
+        args: ["/app/order"]
         ports:
-        - containerPort: 8080
+        - containerPort: 8083
         env:
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
-          value: "http://otel-collector.loadgen.svc.cluster.local:4318"
+          value: "otel-collector.loadgen.svc.cluster.local:4317"
         - name: OTEL_INSECURE
           value: "true"
         - name: OTEL_SERVICE_NAME
           value: order-service
         - name: SERVICE_PORT
-          value: "8080"
+          value: "8083"
         - name: POSTGRES_DSN
           value: "postgres://loadgen:loadgen@postgres.loadgen.svc.cluster.local:5432/loadgen?sslmode=disable"
         - name: REDIS_URL
@@ -278,13 +278,13 @@ spec:
         livenessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 8083
           initialDelaySeconds: 10
           periodSeconds: 10
         readinessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 8083
           initialDelaySeconds: 5
           periodSeconds: 5
 
@@ -300,7 +300,7 @@ spec:
     app: order-service
   ports:
   - port: 8080
-    targetPort: 8080
+    targetPort: 8083
 
 ---
 # Payment Service Deployment
@@ -328,30 +328,30 @@ spec:
       - name: payment-service
         image: loadgen:latest
         imagePullPolicy: Never
-        args: ["/app/payment-service"]
+        args: ["/app/payment"]
         ports:
-        - containerPort: 8080
+        - containerPort: 8084
         env:
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
-          value: "http://otel-collector.loadgen.svc.cluster.local:4318"
+          value: "otel-collector.loadgen.svc.cluster.local:4317"
         - name: OTEL_INSECURE
           value: "true"
         - name: OTEL_SERVICE_NAME
           value: payment-service
         - name: SERVICE_PORT
-          value: "8080"
+          value: "8084"
         - name: POSTGRES_DSN
           value: "postgres://loadgen:loadgen@postgres.loadgen.svc.cluster.local:5432/loadgen?sslmode=disable"
         livenessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 8084
           initialDelaySeconds: 10
           periodSeconds: 10
         readinessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 8084
           initialDelaySeconds: 5
           periodSeconds: 5
 
@@ -367,7 +367,7 @@ spec:
     app: payment-service
   ports:
   - port: 8080
-    targetPort: 8080
+    targetPort: 8084
 
 ---
 # Notification Worker Deployment
@@ -398,18 +398,18 @@ spec:
       - name: notification-worker
         image: loadgen:latest
         imagePullPolicy: Never
-        args: ["/app/notification-worker"]
+        args: ["/app/notification"]
         ports:
-        - containerPort: 8080
+        - containerPort: 8085
         env:
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
-          value: "http://otel-collector.loadgen.svc.cluster.local:4318"
+          value: "otel-collector.loadgen.svc.cluster.local:4317"
         - name: OTEL_INSECURE
           value: "true"
         - name: OTEL_SERVICE_NAME
           value: notification-worker
         - name: SERVICE_PORT
-          value: "8080"
+          value: "8085"
         - name: POSTGRES_DSN
           value: "postgres://loadgen:loadgen@postgres.loadgen.svc.cluster.local:5432/loadgen?sslmode=disable"
         - name: NATS_URL
@@ -417,13 +417,13 @@ spec:
         livenessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 8085
           initialDelaySeconds: 10
           periodSeconds: 10
         readinessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 8085
           initialDelaySeconds: 5
           periodSeconds: 5
 
@@ -439,7 +439,7 @@ spec:
     app: notification-worker
   ports:
   - port: 8080
-    targetPort: 8080
+    targetPort: 8085
 
 ---
 # Traffic Generator Deployment (Simulates production traffic)
@@ -467,12 +467,12 @@ spec:
       - name: traffic-generator
         image: loadgen:latest
         imagePullPolicy: Never
-        args: ["/app/traffic-generator"]
+        args: ["/app/traffic"]
         env:
         - name: TARGET_URL
           value: "http://gateway.loadgen.svc.cluster.local:8080"
         - name: REQUESTS_PER_SECOND
-          value: "100"
+          value: "10"
         resources:
           requests:
             cpu: 500m

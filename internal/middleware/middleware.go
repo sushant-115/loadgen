@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -68,19 +69,19 @@ func Metrics(next http.Handler) http.Handler {
 			attribute.String("http.route", r.URL.Path),
 		)
 
-		telemetry.ActiveRequests.Add(ctx, 1, attribute.WithAttributeSet(attrs))
+		telemetry.ActiveRequests.Add(ctx, 1, metric.WithAttributeSet(attrs))
 		start := time.Now()
 
 		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(rw, r.WithContext(ctx))
 
 		duration := time.Since(start).Seconds()
-		telemetry.ActiveRequests.Add(ctx, -1, attribute.WithAttributeSet(attrs))
-		telemetry.RequestCounter.Add(ctx, 1, attribute.WithAttributeSet(attrs))
-		telemetry.RequestDuration.Record(ctx, duration, attribute.WithAttributeSet(attrs))
+		telemetry.ActiveRequests.Add(ctx, -1, metric.WithAttributeSet(attrs))
+		telemetry.RequestCounter.Add(ctx, 1, metric.WithAttributeSet(attrs))
+		telemetry.RequestDuration.Record(ctx, duration, metric.WithAttributeSet(attrs))
 
 		if rw.statusCode >= 400 {
-			telemetry.ErrorCounter.Add(ctx, 1, attribute.WithAttributeSet(attrs))
+			telemetry.ErrorCounter.Add(ctx, 1, metric.WithAttributeSet(attrs))
 		}
 	})
 }

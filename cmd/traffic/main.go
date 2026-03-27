@@ -74,7 +74,6 @@ func (s *statistics) record(statusCode int, latency time.Duration) {
 
 func (s *statistics) summarize() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	total := s.total
 	successes := s.successes
 	failures := s.failures
@@ -83,8 +82,6 @@ func (s *statistics) summarize() {
 	// Reset latencies for next window.
 	s.latencies = s.latencies[:0]
 	s.mu.Unlock()
-	// Re-lock is not needed; we copied data.
-	// Unlock happened above. This function must not hold the lock for sort.
 
 	if total == 0 {
 		slog.Info("traffic summary: no requests in this period")

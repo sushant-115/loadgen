@@ -102,9 +102,9 @@ func main() {
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 	mux.Handle("GET /metrics", telemetry.PrometheusHandler())
-	chaos.RegisterRoutes(mux)
+	chaos.RegisterChaosEndpoints(mux)
 
-	handler := middleware.Chain(mux, middleware.Tracing(serviceName))
+	handler := middleware.Chain(serviceName, slog.Default(), mux)
 
 	srv := &http.Server{
 		Addr:    ":8084",
@@ -151,8 +151,11 @@ func handleProcess(w http.ResponseWriter, r *http.Request) {
 	)
 	defer span.End()
 
-	// Inject chaos.
-	chaos.Get().InjectLatency()
+	// Inject chaos latency.
+	if chaos.IsActive(chaos.LatencyInjection) {
+		delay := time.Duration(float64(500*time.Millisecond) * chaos.GetIntensity(chaos.LatencyInjection))
+		time.Sleep(delay)
+	}
 
 	paymentID := fmt.Sprintf("pay_%s", randomID(12))
 	txnID := fmt.Sprintf("txn_%s", randomID(16))

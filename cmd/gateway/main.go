@@ -120,7 +120,6 @@ func main() {
 
 			// Propagate trace context to downstream.
 			r = r.WithContext(ctx)
-			middleware.InjectContext(ctx, r)
 
 			proxy.ServeHTTP(w, r)
 		}
@@ -140,7 +139,7 @@ func main() {
 	mux.HandleFunc("GET /api/orders", proxyHandler("/api/orders", "/api", orderURL, orderProxy))
 
 	// Apply middleware chain.
-	handler := middleware.Chain(serviceName, mux)
+	handler := middleware.Chain(serviceName, slog.Default(), mux)
 
 	srv := &http.Server{
 		Addr:         ":8080",

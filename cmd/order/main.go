@@ -83,7 +83,7 @@ func main() {
 	mux.HandleFunc("/health", healthHandler)
 	mux.Handle("/metrics", telemetry.PrometheusHandler())
 
-	chaos.Register(mux, logger)
+	chaos.RegisterChaosEndpoints(mux)
 
 	handler := middleware.Chain(serviceName, logger, mux)
 
@@ -147,8 +147,9 @@ func healthHandler(w http.ResponseWriter, _ *http.Request) {
 }
 
 func ordersHandler(w http.ResponseWriter, r *http.Request) {
-	if chaos.MaybeInject(w) {
-		return
+	if chaos.IsActive(chaos.LatencyInjection) {
+		delay := time.Duration(float64(200*time.Millisecond) * chaos.GetIntensity(chaos.LatencyInjection))
+		time.Sleep(delay)
 	}
 	switch r.Method {
 	case http.MethodGet:
@@ -161,8 +162,9 @@ func ordersHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func orderByIDHandler(w http.ResponseWriter, r *http.Request) {
-	if chaos.MaybeInject(w) {
-		return
+	if chaos.IsActive(chaos.LatencyInjection) {
+		delay := time.Duration(float64(200*time.Millisecond) * chaos.GetIntensity(chaos.LatencyInjection))
+		time.Sleep(delay)
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/orders/")
 	if id == "" {

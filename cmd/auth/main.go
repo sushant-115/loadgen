@@ -44,7 +44,7 @@ func main() {
 	defer shutdown()
 
 	// Platform simulators.
-	db = platform.NewDB(0.01) // 1% DB error rate
+	db = platform.NewDB()
 	cache = platform.NewCache()
 	tracer = otel.Tracer(serviceName)
 
@@ -69,7 +69,7 @@ func main() {
 	mux.HandleFunc("POST /verify", handleVerify)
 
 	// Apply middleware chain.
-	handler := middleware.Chain(serviceName, mux)
+	handler := middleware.Chain(serviceName, slog.Default(), mux)
 
 	srv := &http.Server{
 		Addr:         ":8081",
