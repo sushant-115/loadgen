@@ -1,19 +1,23 @@
-// Package telemetry sets up OpenTelemetry tracing, metrics, and Prometheus
+// Package telemetry sets up OpenTelemetry tracing, metrics, logs, and Prometheus
 // exposition for each microservice in the loadgen project.
 package telemetry
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
 
+	"go.opentelemetry.io/contrib/bridges/otelslog"
 	promexporter "go.opentelemetry.io/otel/exporters/prometheus"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -89,6 +93,25 @@ func Init(serviceName string) (shutdown func(), err error) {
 	)
 	otel.SetMeterProvider(mp)
 
+	// --- Log provider (OTLP gRPC) ---
+	logExporter, err := otlploggrpc.New(ctx,
+		otlploggrpc.WithEndpoint(endpoint),
+		otlploggrpc.WithInsecure(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	lp := sdklog.NewLoggerProvider(
+		sdklog.WithResource(res),
+		sdklog.WithProcessor(sdklog.NewBatchProcessor(logExporter, sdklog.WithExportInterval(5*time.Second))),
+	)
+
+	// Bridge slog to OTEL log provider while keeping stdout output for kubectl logs.
+	otelHandler := otelslog.NewHandler(serviceName, otelslog.WithLoggerProvider(lp))
+	stdoutHandler := slog.NewJSONHandler(os.Stdout, nil)
+	slog.SetDefault(slog.New(&fanoutHandler{handlers: []slog.Handler{stdoutHandler, otelHandler}}))
+
 	// Prometheus HTTP handler.
 	promHandler = promhttp.Handler()
 
@@ -124,10 +147,11 @@ func Init(serviceName string) (shutdown func(), err error) {
 		return nil, err
 	}
 
-	// Shutdown tears down both providers.
+	// Shutdown tears down all providers.
 	shutdown = func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		_ = lp.Shutdown(ctx)
 		_ = tp.Shutdown(ctx)
 		_ = mp.Shutdown(ctx)
 	}
@@ -151,4 +175,43 @@ func PrometheusHandler() http.Handler {
 	}
 	// Fallback if Init has not been called yet.
 	return promhttp.Handler()
+}
+
+// fanoutHandler sends each log record to multiple slog.Handlers.
+type fanoutHandler struct {
+	handlers []slog.Handler
+}
+
+func (h *fanoutHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, hh := range h.handlers {
+		if hh.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *fanoutHandler) Handle(ctx context.Context, r slog.Record) error {
+	for _, hh := range h.handlers {
+		if hh.Enabled(ctx, r.Level) {
+			_ = hh.Handle(ctx, r)
+		}
+	}
+	return nil
+}
+
+func (h *fanoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	cloned := make([]slog.Handler, len(h.handlers))
+	for i, hh := range h.handlers {
+		cloned[i] = hh.WithAttrs(attrs)
+	}
+	return &fanoutHandler{handlers: cloned}
+}
+
+func (h *fanoutHandler) WithGroup(name string) slog.Handler {
+	cloned := make([]slog.Handler, len(h.handlers))
+	for i, hh := range h.handlers {
+		cloned[i] = hh.WithGroup(name)
+	}
+	return &fanoutHandler{handlers: cloned}
 }
