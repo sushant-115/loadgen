@@ -1,0 +1,45 @@
+# Stage 1: Build all services
+FROM golang:1.25.0-alpine AS builder
+
+RUN apk add --no-cache git ca-certificates tzdata build-base
+
+WORKDIR /src
+
+# Cache dependency downloads
+COPY go.mod go.sum ./
+RUN mkdir -p /go/pkg/mod && \
+    go mod download -x || true
+
+COPY . .
+
+# Build all service binaries
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w -extldflags '-static'" \
+    -o /out/gateway ./cmd/gateway && \
+    go build -ldflags="-s -w -extldflags '-static'" \
+    -o /out/auth ./cmd/auth && \
+    go build -ldflags="-s -w -extldflags '-static'" \
+    -o /out/user ./cmd/user && \
+    go build -ldflags="-s -w -extldflags '-static'" \
+    -o /out/order ./cmd/order && \
+    go build -ldflags="-s -w -extldflags '-static'" \
+    -o /out/payment ./cmd/payment && \
+    go build -ldflags="-s -w -extldflags '-static'" \
+    -o /out/notification ./cmd/notification && \
+    go build -ldflags="-s -w -extldflags '-static'" \
+    -o /out/traffic ./cmd/traffic
+
+# Stage 2: Runtime
+FROM alpine:3.19
+
+RUN apk add --no-cache ca-certificates tzdata curl
+
+# Copy all binaries
+COPY --from=builder /out/* /app/
+
+WORKDIR /app
+
+EXPOSE 8080
+
+# Default command (will be overridden by k8s)
+CMD ["/app/gateway"]

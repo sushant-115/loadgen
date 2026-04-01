@@ -1,0 +1,67 @@
+version: "3.8"
+
+x-loadgen-multi: &loadgen-multi
+  build:
+    context: .
+    dockerfile: Dockerfile.multi
+  restart: unless-stopped
+  networks:
+    - loadgen
+
+services:
+  # Remap conflicting ports with infrasage
+  prometheus:
+    ports:
+      - "9095:9090"
+
+  grafana:
+    ports:
+      - "3001:3000"
+
+  gateway:
+    <<: *loadgen-multi
+    command: ["/app/gateway"]
+    ports:
+      - "18080:8080"
+
+  auth-service:
+    <<: *loadgen-multi
+    command: ["/app/auth"]
+    ports:
+      - "18081:8080"
+
+  user-service:
+    <<: *loadgen-multi
+    command: ["/app/user"]
+    ports:
+      - "18082:8080"
+
+  order-service:
+    <<: *loadgen-multi
+    command: ["/app/order"]
+    ports:
+      - "18083:8080"
+
+  payment-service:
+    <<: *loadgen-multi
+    command: ["/app/payment"]
+    ports:
+      - "18084:8080"
+
+  notification-worker:
+    <<: *loadgen-multi
+    command: ["/app/notification"]
+    ports:
+      - "18085:8080"
+
+  nginx:
+    ports:
+      - "8880:80"
+
+  # 20 RPM = 0.333 RPS
+  traffic-generator:
+    <<: *loadgen-multi
+    command: ["/app/traffic"]
+    environment:
+      TARGET_URL: http://gateway:8080
+      REQUESTS_PER_SECOND: "0.333"
