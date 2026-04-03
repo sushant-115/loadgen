@@ -81,14 +81,14 @@ spec:
         imagePullPolicy: Never
         command: ["/app/auth"]
         ports:
-        - containerPort: 8080
+        - containerPort: 8081
         env:
         - name: SERVICE_NAME
           value: "auth-service"
         livenessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 8081
           initialDelaySeconds: 5
           periodSeconds: 10
 
@@ -103,8 +103,8 @@ spec:
   selector:
     app: auth-service
   ports:
-  - port: 8080
-    targetPort: 8080
+  - port: 8081
+    targetPort: 8081
 
 ---
 # User Service (chaos-enabled)
@@ -129,14 +129,14 @@ spec:
         imagePullPolicy: Never
         command: ["/app/user"]
         ports:
-        - containerPort: 8080
+        - containerPort: 8082
         env:
         - name: SERVICE_NAME
           value: "user-service"
         livenessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 8082
           initialDelaySeconds: 5
           periodSeconds: 10
 
@@ -151,8 +151,8 @@ spec:
   selector:
     app: user-service
   ports:
-  - port: 8080
-    targetPort: 8080
+  - port: 8082
+    targetPort: 8082
 
 ---
 # Order Service (chaos-enabled)
@@ -177,14 +177,14 @@ spec:
         imagePullPolicy: Never
         command: ["/app/order"]
         ports:
-        - containerPort: 8080
+        - containerPort: 8083
         env:
         - name: SERVICE_NAME
           value: "order-service"
         livenessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 8083
           initialDelaySeconds: 5
           periodSeconds: 10
 
@@ -199,8 +199,8 @@ spec:
   selector:
     app: order-service
   ports:
-  - port: 8080
-    targetPort: 8080
+  - port: 8083
+    targetPort: 8083
 
 ---
 # Payment Service (chaos-enabled)
@@ -225,14 +225,14 @@ spec:
         imagePullPolicy: Never
         command: ["/app/payment"]
         ports:
-        - containerPort: 8080
+        - containerPort: 8084
         env:
         - name: SERVICE_NAME
           value: "payment-service"
         livenessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 8084
           initialDelaySeconds: 5
           periodSeconds: 10
 
@@ -247,8 +247,8 @@ spec:
   selector:
     app: payment-service
   ports:
-  - port: 8080
-    targetPort: 8080
+  - port: 8084
+    targetPort: 8084
 
 ---
 # Notification Worker (chaos-enabled)
@@ -273,14 +273,14 @@ spec:
         imagePullPolicy: Never
         command: ["/app/notification"]
         ports:
-        - containerPort: 8080
+        - containerPort: 8085
         env:
         - name: SERVICE_NAME
           value: "notification-worker"
         livenessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 8085
           initialDelaySeconds: 5
           periodSeconds: 10
 
@@ -295,11 +295,10 @@ spec:
   selector:
     app: notification-worker
   ports:
-  - port: 8080
-    targetPort: 8080
+  - port: 8085
+    targetPort: 8085
 
 ---
-# OpenTelemetry SDK Instrumented Load Generator
 # This pod continuously sends OTEL telemetry to the collector
 apiVersion: v1
 kind: ConfigMap
