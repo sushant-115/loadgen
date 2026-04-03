@@ -319,6 +319,16 @@ data:
     SERVICES = ["gateway", "auth-service", "user-service", "order-service", "payment-service", "notification-worker"]
     METRICS = ["http_request_duration_seconds", "http_requests_total", "db_query_duration_seconds", "cache_hit_ratio", "error_rate", "cpu_usage_percent", "memory_usage_mb"]
 
+    # Correct port per service (must match binary listen ports)
+    SERVICE_PORTS = {
+        "gateway": 8080,
+        "auth-service": 8081,
+        "user-service": 8082,
+        "order-service": 8083,
+        "payment-service": 8084,
+        "notification-worker": 8085,
+    }
+
     # Track chaos state per service
     chaos_state = {}
     chaos_lock = threading.Lock()
@@ -327,13 +337,26 @@ data:
         """Poll each service's /chaos/status endpoint every 5 seconds"""
         while True:
             for svc in SERVICES:
+                port = SERVICE_PORTS.get(svc, 8080)
                 try:
-                    url = f"http://{svc}.loadgen.svc.cluster.local:8080/chaos/status"
+                    url = f"http://{svc}.loadgen.svc.cluster.local:{port}/chaos/status"
                     req = Request(url, method="GET")
                     with urlopen(req, timeout=2) as resp:
+                        # Response schema from chaos.go: {"latency_injection": {"enabled": true, "intensity": 0.9, ...}, ...}
                         data = json.loads(resp.read().decode())
+                        active_type = None
+                        active_intensity = 0.0
+                        for ct, state in data.items():
+                            if isinstance(state, dict) and state.get("enabled", False):
+                                active_type = ct
+                                active_intensity = float(state.get("intensity", 0))
+                                break
                         with chaos_lock:
-                            chaos_state[svc] = data
+                            chaos_state[svc] = {
+                                "active": active_type is not None,
+                                "type": active_type or "",
+                                "intensity": active_intensity,
+                            }
                 except Exception:
                     pass
             time.sleep(5)
@@ -368,11 +391,12 @@ data:
             return value
 
         # Chaos is active - ALL metrics shift dramatically to affect embeddings
-        factor = intensity / 100.0  # 0.0 to 1.0
+        factor = intensity  # already 0.0 to 1.0 (not percentage)
 
         # Universal chaos effects (affect ALL metrics to shift embedding vector)
+        # Keys match chaos.go ChaosType constants exactly
         chaos_multipliers = {
-            "latency": {
+            "latency_injection": {
                 "http_request_duration_seconds": lambda v, f: random.uniform(5.0, 30.0) * f,
                 "http_requests_total": lambda v, f: v * (0.1 + 0.2 * (1-f)),
                 "db_query_duration_seconds": lambda v, f: random.uniform(2.0, 15.0) * f,
@@ -381,7 +405,7 @@ data:
                 "cpu_usage_percent": lambda v, f: random.uniform(60, 95) * f,
                 "memory_usage_mb": lambda v, f: random.uniform(800, 2000) * f,
             },
-            "errors": {
+            "error_injection": {
                 "http_request_duration_seconds": lambda v, f: random.uniform(3.0, 20.0) * f,
                 "http_requests_total": lambda v, f: v * (0.2 + 0.3 * (1-f)),
                 "db_query_duration_seconds": lambda v, f: random.uniform(1.0, 8.0) * f,
@@ -390,7 +414,7 @@ data:
                 "cpu_usage_percent": lambda v, f: random.uniform(70, 99) * f,
                 "memory_usage_mb": lambda v, f: random.uniform(1000, 3000) * f,
             },
-            "cpu": {
+            "cpu_stress": {
                 "http_request_duration_seconds": lambda v, f: random.uniform(2.0, 10.0) * f,
                 "http_requests_total": lambda v, f: v * (0.3 + 0.3 * (1-f)),
                 "db_query_duration_seconds": lambda v, f: random.uniform(0.5, 5.0) * f,
@@ -399,7 +423,7 @@ data:
                 "cpu_usage_percent": lambda v, f: random.uniform(85, 100),
                 "memory_usage_mb": lambda v, f: random.uniform(600, 1500) * f,
             },
-            "memory": {
+            "memory_leak": {
                 "http_request_duration_seconds": lambda v, f: random.uniform(1.0, 8.0) * f,
                 "http_requests_total": lambda v, f: v * (0.4 + 0.3 * (1-f)),
                 "db_query_duration_seconds": lambda v, f: random.uniform(0.3, 3.0) * f,
