@@ -23,6 +23,7 @@ spec:
       - name: gateway
         image: chaos-service:latest
         imagePullPolicy: Never
+        command: ["/app/gateway"]
         ports:
         - containerPort: 8080
           name: http
@@ -31,13 +32,13 @@ spec:
           value: "gateway"
         livenessProbe:
           httpGet:
-            path: /healthz
+            path: /health
             port: 8080
           initialDelaySeconds: 5
           periodSeconds: 10
         readinessProbe:
           httpGet:
-            path: /healthz
+            path: /health
             port: 8080
           initialDelaySeconds: 5
           periodSeconds: 5
@@ -78,6 +79,7 @@ spec:
       - name: auth-service
         image: chaos-service:latest
         imagePullPolicy: Never
+        command: ["/app/auth"]
         ports:
         - containerPort: 8080
         env:
@@ -85,7 +87,7 @@ spec:
           value: "auth-service"
         livenessProbe:
           httpGet:
-            path: /healthz
+            path: /health
             port: 8080
           initialDelaySeconds: 5
           periodSeconds: 10
@@ -125,6 +127,7 @@ spec:
       - name: user-service
         image: chaos-service:latest
         imagePullPolicy: Never
+        command: ["/app/user"]
         ports:
         - containerPort: 8080
         env:
@@ -132,7 +135,7 @@ spec:
           value: "user-service"
         livenessProbe:
           httpGet:
-            path: /healthz
+            path: /health
             port: 8080
           initialDelaySeconds: 5
           periodSeconds: 10
@@ -172,6 +175,7 @@ spec:
       - name: order-service
         image: chaos-service:latest
         imagePullPolicy: Never
+        command: ["/app/order"]
         ports:
         - containerPort: 8080
         env:
@@ -179,7 +183,7 @@ spec:
           value: "order-service"
         livenessProbe:
           httpGet:
-            path: /healthz
+            path: /health
             port: 8080
           initialDelaySeconds: 5
           periodSeconds: 10
@@ -219,6 +223,7 @@ spec:
       - name: payment-service
         image: chaos-service:latest
         imagePullPolicy: Never
+        command: ["/app/payment"]
         ports:
         - containerPort: 8080
         env:
@@ -226,7 +231,7 @@ spec:
           value: "payment-service"
         livenessProbe:
           httpGet:
-            path: /healthz
+            path: /health
             port: 8080
           initialDelaySeconds: 5
           periodSeconds: 10
@@ -266,6 +271,7 @@ spec:
       - name: notification-worker
         image: chaos-service:latest
         imagePullPolicy: Never
+        command: ["/app/notification"]
         ports:
         - containerPort: 8080
         env:
@@ -273,7 +279,7 @@ spec:
           value: "notification-worker"
         livenessProbe:
           httpGet:
-            path: /healthz
+            path: /health
             port: 8080
           initialDelaySeconds: 5
           periodSeconds: 10
