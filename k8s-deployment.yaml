@@ -45,6 +45,7 @@ data:
         compression: none
         headers:
           "Content-Encoding": ""
+          "X-API-Key": "__INFRASAGE_API_KEY__"
 
       debug:
         verbosity: basic
