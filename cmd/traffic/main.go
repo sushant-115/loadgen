@@ -253,6 +253,7 @@ func sendRequest(ctx context.Context, client *http.Client, baseURL string) {
 		trace.WithAttributes(
 			attribute.String("http.method", method),
 			attribute.String("http.url", url),
+			attribute.String("peer.service", "api-gateway"),
 		),
 	)
 	defer span.End()

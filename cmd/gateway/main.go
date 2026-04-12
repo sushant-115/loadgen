@@ -73,7 +73,7 @@ func main() {
 	chaos.RegisterChaosEndpoints(mux)
 
 	// Proxy routes.
-	proxyHandler := func(pathPrefix, stripPrefix, targetBase string, proxy *httputil.ReverseProxy) http.HandlerFunc {
+	proxyHandler := func(pathPrefix, stripPrefix, targetBase, peerService string, proxy *httputil.ReverseProxy) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			// Rate limiting.
 			current := requestCount.Add(1)
@@ -92,12 +92,14 @@ func main() {
 				r.Header.Set("X-Request-ID", reqID)
 			}
 
-			// Start a proxy span.
+			// Start a proxy span marking the downstream peer service.
 			ctx, span := tracer.Start(ctx, "gateway.proxy",
+				trace.WithSpanKind(trace.SpanKindClient),
 				trace.WithAttributes(
 					attribute.String("proxy.target", targetBase),
 					attribute.String("http.path", r.URL.Path),
 					attribute.String("request.id", reqID),
+					attribute.String("peer.service", peerService),
 				),
 			)
 			defer span.End()
@@ -126,17 +128,17 @@ func main() {
 	}
 
 	// Auth routes.
-	mux.HandleFunc("POST /api/auth/login", proxyHandler("/api/auth/login", "/api/auth", authURL, authProxy))
-	mux.HandleFunc("POST /api/auth/verify", proxyHandler("/api/auth/verify", "/api/auth", authURL, authProxy))
+	mux.HandleFunc("POST /api/auth/login", proxyHandler("/api/auth/login", "/api/auth", authURL, "auth-service", authProxy))
+	mux.HandleFunc("POST /api/auth/verify", proxyHandler("/api/auth/verify", "/api/auth", authURL, "auth-service", authProxy))
 
 	// User routes.
-	mux.HandleFunc("GET /api/users/", proxyHandler("/api/users/", "/api", userURL, userProxy))
-	mux.HandleFunc("GET /api/users", proxyHandler("/api/users", "/api", userURL, userProxy))
+	mux.HandleFunc("GET /api/users/", proxyHandler("/api/users/", "/api", userURL, "user-service", userProxy))
+	mux.HandleFunc("GET /api/users", proxyHandler("/api/users", "/api", userURL, "user-service", userProxy))
 
 	// Order routes.
-	mux.HandleFunc("POST /api/orders", proxyHandler("/api/orders", "/api", orderURL, orderProxy))
-	mux.HandleFunc("GET /api/orders/", proxyHandler("/api/orders/", "/api", orderURL, orderProxy))
-	mux.HandleFunc("GET /api/orders", proxyHandler("/api/orders", "/api", orderURL, orderProxy))
+	mux.HandleFunc("POST /api/orders", proxyHandler("/api/orders", "/api", orderURL, "order-service", orderProxy))
+	mux.HandleFunc("GET /api/orders/", proxyHandler("/api/orders/", "/api", orderURL, "order-service", orderProxy))
+	mux.HandleFunc("GET /api/orders", proxyHandler("/api/orders", "/api", orderURL, "order-service", orderProxy))
 
 	// Apply middleware chain.
 	handler := middleware.Chain(serviceName, slog.Default(), mux)
