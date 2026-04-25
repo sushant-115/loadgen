@@ -1,0 +1,23 @@
+{
+  "campaign_id": "payment-degradation-wave",
+  "steps": [
+    {
+      "type": "latency_injection",
+      "intensity": 0.65,
+      "duration_seconds": 120,
+      "start_after_seconds": 0
+    },
+    {
+      "type": "error_injection",
+      "intensity": 0.25,
+      "duration_seconds": 90,
+      "start_after_seconds": 30
+    },
+    {
+      "type": "cpu_stress",
+      "intensity": 0.8,
+      "duration_seconds": 60,
+      "start_after_seconds": 60
+    }
+  ]
+}

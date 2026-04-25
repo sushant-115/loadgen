@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"math/rand"
@@ -30,6 +31,7 @@ import (
 const serviceName = "traffic-generator"
 
 var tracer trace.Tracer
+var actors = newActorState(2000)
 
 // ---------- config ----------
 
@@ -37,6 +39,7 @@ type config struct {
 	TargetURL            string
 	RequestsPerSecond    int
 	BurstIntervalSeconds int
+	ScenarioFile         string
 }
 
 func loadConfig() config {
@@ -44,6 +47,7 @@ func loadConfig() config {
 		TargetURL:            envOrDefault("TARGET_URL", "http://gateway:8080"),
 		RequestsPerSecond:    envIntOrDefault("REQUESTS_PER_SECOND", 10),
 		BurstIntervalSeconds: envIntOrDefault("BURST_INTERVAL_SECONDS", 300),
+		ScenarioFile:         envOrDefault("TRAFFIC_SCENARIO_FILE", ""),
 	}
 	return c
 }
@@ -124,10 +128,24 @@ func main() {
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 
 	cfg := loadConfig()
+	scenarioCfg, err := loadScenario(cfg.ScenarioFile)
+	if err != nil {
+		slog.Error("failed to load scenario", "error", err, "file", cfg.ScenarioFile)
+		os.Exit(1)
+	}
+
+	picker, err := newActionPicker(scenarioCfg)
+	if err != nil {
+		slog.Error("invalid scenario", "error", err)
+		os.Exit(1)
+	}
+
 	slog.Info("traffic-generator starting",
 		"target", cfg.TargetURL,
 		"rps", cfg.RequestsPerSecond,
 		"burst_interval_s", cfg.BurstIntervalSeconds,
+		"scenario", scenarioCfg.Name,
+		"scenario_file", cfg.ScenarioFile,
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -177,93 +195,39 @@ func main() {
 			burstTimer.Reset(time.Duration(cfg.BurstIntervalSeconds) * time.Second)
 
 		case <-ticker.C:
-			go sendRequest(ctx, client, cfg.TargetURL)
+			go sendRequest(ctx, client, cfg.TargetURL, picker)
 		}
 	}
 }
 
 // ---------- request generation ----------
 
-func sendRequest(ctx context.Context, client *http.Client, baseURL string) {
-	roll := rand.Float64()
-	var method, path string
-	var body []byte
-
-	switch {
-	case roll < 0.40:
-		// 40% GET /api/users
-		method = http.MethodGet
-		if rand.Float64() < 0.5 {
-			path = "/api/users"
-		} else {
-			path = fmt.Sprintf("/api/users/user_%s", randomID(8))
-		}
-
-	case roll < 0.60:
-		// 20% POST /api/auth/login
-		method = http.MethodPost
-		path = "/api/auth/login"
-		body, _ = json.Marshal(map[string]string{
-			"username": fmt.Sprintf("user_%s", randomID(6)),
-			"password": "testpassword123",
-		})
-
-	case roll < 0.85:
-		// 25% POST /api/orders
-		method = http.MethodPost
-		path = "/api/orders"
-		items := rand.Intn(5) + 1
-		orderItems := make([]map[string]any, items)
-		for i := range orderItems {
-			orderItems[i] = map[string]any{
-				"product_id": fmt.Sprintf("prod_%s", randomID(6)),
-				"quantity":   rand.Intn(3) + 1,
-				"price":      float64(rand.Intn(9900)+100) / 100.0,
-			}
-		}
-		body, _ = json.Marshal(map[string]any{
-			"user_id": fmt.Sprintf("user_%s", randomID(8)),
-			"items":   orderItems,
-		})
-
-	case roll < 0.95:
-		// 10% GET /api/orders
-		method = http.MethodGet
-		if rand.Float64() < 0.5 {
-			path = "/api/orders"
-		} else {
-			path = fmt.Sprintf("/api/orders/order_%s", randomID(8))
-		}
-
-	default:
-		// 5% POST /api/users (create)
-		method = http.MethodPost
-		path = "/api/users"
-		body, _ = json.Marshal(map[string]string{
-			"name":  fmt.Sprintf("User %s", randomID(4)),
-			"email": fmt.Sprintf("%s@example.com", randomID(8)),
-		})
+func sendRequest(ctx context.Context, client *http.Client, baseURL string, picker *actionPicker) {
+	plan := buildPlan(picker.pick(), actors)
+	if plan.Action == "" {
+		return
 	}
 
-	url := baseURL + path
+	url := baseURL + plan.Path
 
 	// Create a span so traffic generator shows up in traces.
-	ctx, span := tracer.Start(ctx, fmt.Sprintf("%s %s", method, path),
+	ctx, span := tracer.Start(ctx, fmt.Sprintf("%s %s", plan.Method, plan.Path),
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(
-			attribute.String("http.method", method),
+			attribute.String("http.method", plan.Method),
 			attribute.String("http.url", url),
 			attribute.String("peer.service", "api-gateway"),
+			attribute.String("traffic.action", plan.Action),
 		),
 	)
 	defer span.End()
 
 	var req *http.Request
 	var reqErr error
-	if body != nil {
-		req, reqErr = http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
+	if plan.Body != nil {
+		req, reqErr = http.NewRequestWithContext(ctx, plan.Method, url, bytes.NewReader(plan.Body))
 	} else {
-		req, reqErr = http.NewRequestWithContext(ctx, method, url, nil)
+		req, reqErr = http.NewRequestWithContext(ctx, plan.Method, url, nil)
 	}
 	if reqErr != nil {
 		slog.ErrorContext(ctx, "failed to create request", "error", reqErr)
@@ -280,8 +244,9 @@ func sendRequest(ctx context.Context, client *http.Client, baseURL string) {
 
 	if err != nil {
 		slog.WarnContext(ctx, "request failed",
-			"method", method,
-			"path", path,
+			"method", plan.Method,
+			"path", plan.Path,
+			"action", plan.Action,
 			"error", err,
 			"latency_ms", latency.Milliseconds(),
 		)
@@ -292,14 +257,53 @@ func sendRequest(ctx context.Context, client *http.Client, baseURL string) {
 	defer resp.Body.Close()
 
 	span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
+	if resp.StatusCode < http.StatusBadRequest {
+		trackState(plan.Action, resp.Body)
+	}
 	globalStats.record(resp.StatusCode, latency)
 
 	slog.DebugContext(ctx, "request completed",
-		"method", method,
-		"path", path,
+		"method", plan.Method,
+		"path", plan.Path,
+		"action", plan.Action,
 		"status", resp.StatusCode,
 		"latency_ms", latency.Milliseconds(),
 	)
+}
+
+func trackState(action string, body io.Reader) {
+	raw, err := io.ReadAll(body)
+	if err != nil || len(raw) == 0 {
+		return
+	}
+
+	switch action {
+	case "users_create", "users_get":
+		var user struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &user); err == nil {
+			actors.addUser(user.ID)
+		}
+	case "auth_login":
+		var login struct {
+			Token  string `json:"token"`
+			UserID string `json:"user_id"`
+		}
+		if err := json.Unmarshal(raw, &login); err == nil {
+			actors.addToken(login.Token)
+			actors.addUser(login.UserID)
+		}
+	case "orders_create", "orders_get":
+		var order struct {
+			OrderID string `json:"order_id"`
+			UserID  string `json:"user_id"`
+		}
+		if err := json.Unmarshal(raw, &order); err == nil {
+			actors.addOrder(order.OrderID)
+			actors.addUser(order.UserID)
+		}
+	}
 }
 
 // ---------- helpers ----------

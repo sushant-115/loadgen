@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -56,16 +58,45 @@ var (
 
 	// cpuCancel is closed to stop CPU-burn goroutines.
 	cpuCancel chan struct{}
+
+	campaignMu     sync.RWMutex
+	activeCampaign *CampaignState
 )
+
+const (
+	maxDuration        = 15 * time.Minute
+	maxCampaignSteps   = 32
+	defaultStepSeconds = 60
+)
+
+// CampaignStep defines one anomaly action in a campaign timeline.
+type CampaignStep struct {
+	Type              ChaosType `json:"type"`
+	Intensity         float64   `json:"intensity"`
+	DurationSeconds   float64   `json:"duration_seconds"`
+	StartAfterSeconds float64   `json:"start_after_seconds"`
+}
+
+// CampaignRequest defines an API payload to run or dry-run a campaign.
+type CampaignRequest struct {
+	CampaignID string         `json:"campaign_id"`
+	DryRun     bool           `json:"dry_run"`
+	Steps      []CampaignStep `json:"steps"`
+}
+
+// CampaignState tracks campaign lifecycle for status and telemetry annotations.
+type CampaignState struct {
+	CampaignID string    `json:"campaign_id"`
+	StartedAt  time.Time `json:"started_at"`
+	DryRun     bool      `json:"dry_run"`
+	StepCount  int       `json:"step_count"`
+	Running    bool      `json:"running"`
+}
 
 // Enable activates a chaos scenario with the given intensity (0-1) and duration.
 func Enable(ct ChaosType, intensity float64, duration time.Duration) {
-	if intensity < 0 {
-		intensity = 0
-	}
-	if intensity > 1 {
-		intensity = 1
-	}
+	intensity = normalizeIntensity(intensity)
+	duration = normalizeDuration(duration)
 
 	mu.Lock()
 	s, ok := states[ct]
@@ -167,6 +198,170 @@ func StatusSnapshot() map[ChaosType]State {
 		out[k] = *v
 	}
 	return out
+}
+
+// ActiveTypes returns active chaos types sorted by name.
+func ActiveTypes() []ChaosType {
+	mu.RLock()
+	defer mu.RUnlock()
+	active := make([]ChaosType, 0, len(states))
+	for ct, s := range states {
+		if s.Enabled {
+			active = append(active, ct)
+		}
+	}
+	sort.Slice(active, func(i, j int) bool { return active[i] < active[j] })
+	return active
+}
+
+// ActiveMetadata returns campaign ID and active chaos labels for telemetry.
+func ActiveMetadata() (bool, string, string) {
+	types := ActiveTypes()
+	if len(types) == 0 {
+		return false, currentCampaignID(), ""
+	}
+	values := make([]string, 0, len(types))
+	for _, t := range types {
+		values = append(values, string(t))
+	}
+	return true, currentCampaignID(), strings.Join(values, ",")
+}
+
+// DisableAll disables all active chaos types.
+func DisableAll() {
+	for ct := range states {
+		Disable(ct)
+	}
+	campaignMu.Lock()
+	if activeCampaign != nil {
+		activeCampaign.Running = false
+	}
+	campaignMu.Unlock()
+}
+
+// StartCampaign validates and executes a campaign timeline.
+func StartCampaign(req CampaignRequest) error {
+	if req.CampaignID == "" {
+		req.CampaignID = fmt.Sprintf("campaign-%d", time.Now().UnixNano())
+	}
+	if len(req.Steps) == 0 {
+		return fmt.Errorf("campaign must include at least one step")
+	}
+	if len(req.Steps) > maxCampaignSteps {
+		return fmt.Errorf("campaign has too many steps: %d > %d", len(req.Steps), maxCampaignSteps)
+	}
+
+	for i := range req.Steps {
+		step := &req.Steps[i]
+		if !isValidChaosType(step.Type) {
+			return fmt.Errorf("invalid chaos type in step %d: %s", i, step.Type)
+		}
+		if step.DurationSeconds <= 0 {
+			step.DurationSeconds = defaultStepSeconds
+		}
+		step.Intensity = normalizeIntensity(step.Intensity)
+		if step.StartAfterSeconds < 0 {
+			step.StartAfterSeconds = 0
+		}
+	}
+
+	campaignMu.Lock()
+	activeCampaign = &CampaignState{
+		CampaignID: req.CampaignID,
+		StartedAt:  time.Now(),
+		DryRun:     req.DryRun,
+		StepCount:  len(req.Steps),
+		Running:    !req.DryRun,
+	}
+	campaignMu.Unlock()
+
+	if req.DryRun {
+		slog.Info("chaos campaign dry-run validated", "campaign_id", req.CampaignID, "steps", len(req.Steps))
+		return nil
+	}
+
+	slog.Warn("chaos campaign started", "campaign_id", req.CampaignID, "steps", len(req.Steps))
+	for _, step := range req.Steps {
+		step := step
+		go func() {
+			time.Sleep(time.Duration(step.StartAfterSeconds * float64(time.Second)))
+			Enable(step.Type, step.Intensity, time.Duration(step.DurationSeconds*float64(time.Second)))
+		}()
+	}
+
+	go func() {
+		endAfter := campaignEndDuration(req.Steps)
+		time.Sleep(endAfter)
+		campaignMu.Lock()
+		if activeCampaign != nil && activeCampaign.CampaignID == req.CampaignID {
+			activeCampaign.Running = false
+		}
+		campaignMu.Unlock()
+		slog.Info("chaos campaign finished", "campaign_id", req.CampaignID)
+	}()
+
+	return nil
+}
+
+func campaignEndDuration(steps []CampaignStep) time.Duration {
+	maxSeconds := 0.0
+	for _, step := range steps {
+		candidate := step.StartAfterSeconds + step.DurationSeconds
+		if candidate > maxSeconds {
+			maxSeconds = candidate
+		}
+	}
+	if maxSeconds <= 0 {
+		maxSeconds = defaultStepSeconds
+	}
+	return time.Duration(maxSeconds*float64(time.Second)) + time.Second
+}
+
+func normalizeIntensity(v float64) float64 {
+	if v > 1 {
+		v = v / 100.0
+	}
+	if v < 0 {
+		v = 0
+	}
+	if v > 1 {
+		v = 1
+	}
+	return v
+}
+
+func normalizeDuration(d time.Duration) time.Duration {
+	if d <= 0 {
+		return defaultStepSeconds * time.Second
+	}
+	if d > maxDuration {
+		return maxDuration
+	}
+	return d
+}
+
+func isValidChaosType(ct ChaosType) bool {
+	_, ok := states[ct]
+	return ok
+}
+
+func currentCampaignID() string {
+	campaignMu.RLock()
+	defer campaignMu.RUnlock()
+	if activeCampaign == nil {
+		return ""
+	}
+	return activeCampaign.CampaignID
+}
+
+func campaignSnapshot() *CampaignState {
+	campaignMu.RLock()
+	defer campaignMu.RUnlock()
+	if activeCampaign == nil {
+		return nil
+	}
+	cp := *activeCampaign
+	return &cp
 }
 
 // ---- side-effect implementations ----
@@ -306,8 +501,51 @@ func RegisterChaosEndpoints(mux *http.ServeMux) {
 			return
 		}
 		snap := StatusSnapshot()
+		active, campaignID, types := ActiveMetadata()
+		resp := map[string]any{
+			"states":       snap,
+			"active":       active,
+			"types":        types,
+			"campaign_id":  campaignID,
+			"campaign":     campaignSnapshot(),
+			"generated_at": time.Now().UTC(),
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(snap)
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+
+	mux.HandleFunc("/chaos/campaign", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req CampaignRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if err := StartCampaign(req); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":      "accepted",
+			"campaign_id": req.CampaignID,
+			"dry_run":     req.DryRun,
+			"step_count":  len(req.Steps),
+		})
+	})
+
+	mux.HandleFunc("/chaos/kill-switch", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		DisableAll()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "all chaos disabled"})
 	})
 }
 
@@ -338,7 +576,7 @@ func makeChaosHandler(ct ChaosType) http.HandlerFunc {
 		}
 
 		dur := time.Duration(req.DurationSeconds * float64(time.Second))
-		Enable(ct, req.Intensity, dur)
+		Enable(ct, normalizeIntensity(req.Intensity), dur)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)

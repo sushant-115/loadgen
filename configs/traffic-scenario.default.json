@@ -1,0 +1,14 @@
+{
+  "name": "default-production-like",
+  "description": "Weighted API traffic with dependency-aware actions",
+  "actions": [
+    { "name": "users_list", "weight": 0.30 },
+    { "name": "users_get", "weight": 0.10 },
+    { "name": "auth_login", "weight": 0.15 },
+    { "name": "auth_verify", "weight": 0.05 },
+    { "name": "orders_create", "weight": 0.20 },
+    { "name": "orders_list", "weight": 0.10 },
+    { "name": "orders_get", "weight": 0.05 },
+    { "name": "users_create", "weight": 0.05 }
+  ]
+}

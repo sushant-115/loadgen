@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/loadgen/internal/chaos"
 	"github.com/loadgen/internal/telemetry"
 
 	"go.opentelemetry.io/otel"
@@ -39,6 +40,8 @@ func Tracing(serviceName string, next http.Handler) http.Handler {
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chaosActive, campaignID, chaosTypes := chaos.ActiveMetadata()
+
 		ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
 		ctx, span := tracer.Start(ctx, r.Method+" "+r.URL.Path,
 			trace.WithSpanKind(trace.SpanKindServer),
@@ -46,6 +49,9 @@ func Tracing(serviceName string, next http.Handler) http.Handler {
 				attribute.String("http.method", r.Method),
 				attribute.String("http.url", r.URL.String()),
 				attribute.String("http.target", r.URL.Path),
+				attribute.Bool("chaos.active", chaosActive),
+				attribute.String("chaos.types", chaosTypes),
+				attribute.String("chaos.campaign_id", campaignID),
 			))
 		defer span.End()
 
@@ -53,6 +59,13 @@ func Tracing(serviceName string, next http.Handler) http.Handler {
 		next.ServeHTTP(rw, r.WithContext(ctx))
 
 		span.SetAttributes(attribute.Int("http.status_code", rw.statusCode))
+		rw.Header().Set("X-Chaos-Active", boolToString(chaosActive))
+		if campaignID != "" {
+			rw.Header().Set("X-Chaos-Campaign", campaignID)
+		}
+		if chaosTypes != "" {
+			rw.Header().Set("X-Chaos-Types", chaosTypes)
+		}
 		if rw.statusCode >= 400 {
 			span.SetStatus(codes.Error, http.StatusText(rw.statusCode))
 		}
@@ -64,9 +77,11 @@ func Tracing(serviceName string, next http.Handler) http.Handler {
 func Metrics(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
+		chaosActive, _, _ := chaos.ActiveMetadata()
 		attrs := attribute.NewSet(
 			attribute.String("http.method", r.Method),
 			attribute.String("http.route", r.URL.Path),
+			attribute.Bool("chaos.active", chaosActive),
 		)
 
 		telemetry.ActiveRequests.Add(ctx, 1, metric.WithAttributeSet(attrs))
@@ -97,16 +112,27 @@ func Logging(logger *slog.Logger, next http.Handler) http.Handler {
 
 		span := trace.SpanFromContext(r.Context())
 		sc := span.SpanContext()
+		chaosActive, campaignID, chaosTypes := chaos.ActiveMetadata()
 
 		logger.Info("request",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", rw.statusCode,
 			"duration_ms", time.Since(start).Milliseconds(),
+			"chaos_active", chaosActive,
+			"chaos_types", chaosTypes,
+			"chaos_campaign", campaignID,
 			"trace_id", sc.TraceID().String(),
 			"span_id", sc.SpanID().String(),
 		)
 	})
+}
+
+func boolToString(v bool) string {
+	if v {
+		return "true"
+	}
+	return "false"
 }
 
 // Chain applies middleware in order: Logging -> Metrics -> Tracing (outermost

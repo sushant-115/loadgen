@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/loadgen/internal/chaos"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -43,6 +44,7 @@ func (db *DB) Insert(ctx context.Context, table, id string, record any) error {
 	defer span.End()
 
 	time.Sleep(time.Duration(1+rand.Intn(5)) * time.Millisecond)
+	applyDBSlowChaosDelay()
 
 	raw, err := json.Marshal(record)
 	if err != nil {
@@ -69,6 +71,7 @@ func (db *DB) Get(ctx context.Context, table, id string, dest any) error {
 	defer span.End()
 
 	time.Sleep(time.Duration(1+rand.Intn(3)) * time.Millisecond)
+	applyDBSlowChaosDelay()
 
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -91,6 +94,7 @@ func (db *DB) List(ctx context.Context, table string) ([]json.RawMessage, error)
 	defer span.End()
 
 	time.Sleep(time.Duration(2+rand.Intn(5)) * time.Millisecond)
+	applyDBSlowChaosDelay()
 
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -113,6 +117,7 @@ func (db *DB) Update(ctx context.Context, table, id string, record any) error {
 	defer span.End()
 
 	time.Sleep(time.Duration(1+rand.Intn(5)) * time.Millisecond)
+	applyDBSlowChaosDelay()
 
 	raw, err := json.Marshal(record)
 	if err != nil {
@@ -227,6 +232,8 @@ func (q *Queue) Publish(ctx context.Context, topic string, payload any) error {
 	}
 	msg := Message{Topic: topic, Payload: raw}
 
+	applyQueueBacklogDelay()
+
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 	for _, ch := range q.subscribers[topic] {
@@ -260,6 +267,7 @@ func (q *Queue) Subscribe(ctx context.Context, topic string, h Handler) func() {
 				if !ok {
 					return
 				}
+				applyQueueBacklogDelay()
 				if err := h(ctx, msg); err != nil {
 					slog.ErrorContext(ctx, "queue handler error",
 						"topic", topic,
@@ -274,6 +282,32 @@ func (q *Queue) Subscribe(ctx context.Context, topic string, h Handler) func() {
 		close(ch)
 		<-done
 	}
+}
+
+func applyDBSlowChaosDelay() {
+	if !chaos.IsActive(chaos.DBSlow) {
+		return
+	}
+	// Additional DB delay up to ~700ms at max intensity.
+	intensity := chaos.GetIntensity(chaos.DBSlow)
+	extra := time.Duration(float64(700*time.Millisecond) * intensity)
+	if extra < 10*time.Millisecond {
+		extra = 10 * time.Millisecond
+	}
+	time.Sleep(extra)
+}
+
+func applyQueueBacklogDelay() {
+	if !chaos.IsActive(chaos.QueueBacklog) {
+		return
+	}
+	// Simulate queue pressure with variable consumer/publish delay.
+	intensity := chaos.GetIntensity(chaos.QueueBacklog)
+	extra := time.Duration(float64(900*time.Millisecond) * intensity)
+	if extra < 20*time.Millisecond {
+		extra = 20 * time.Millisecond
+	}
+	time.Sleep(extra)
 }
 
 // ---------------------------------------------------------------------------

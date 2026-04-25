@@ -23,10 +23,12 @@ exporters:
   loki:
     endpoint: http://loki:3100/loki/api/v1/push
 
-  otlp/infrasage:
-    endpoint: 172.31.36.245:32186
-    tls:
-      insecure: true
+  otlphttp/infrasage:
+    endpoint: https://api.infrasage.dev
+    encoding: json
+    compression: none
+    headers:
+      X-API-Key: ${env:INFRASAGE_API_KEY}
 
   debug:
     verbosity: basic
@@ -36,12 +38,12 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlp/jaeger, otlp/infrasage]
+      exporters: [otlp/jaeger, otlphttp/infrasage]
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [prometheus, otlp/infrasage]
+      exporters: [prometheus, otlphttp/infrasage]
     logs:
       receivers: [otlp]
       processors: [batch]
-      exporters: [loki, otlp/infrasage]
+      exporters: [loki, otlphttp/infrasage]

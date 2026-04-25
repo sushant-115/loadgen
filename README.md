@@ -27,7 +27,61 @@ POST /chaos/logstorm
 POST /chaos/db-slow
 POST /chaos/queue-backlog
 POST /chaos/pod-crash
+POST /chaos/campaign       {"campaign_id":"...","steps":[...],"dry_run":false}
+POST /chaos/kill-switch
 DELETE /chaos/<type>        # disable
+GET /chaos/status
+```
+
+Notes:
+- `intensity` accepts either ratio (`0.25`) or percentage (`25`).
+- Guardrails cap anomaly duration to 15 minutes per step.
+- `/chaos/status` now includes active types and campaign metadata for correlation.
+
+### Campaign Example
+
+Use [configs/chaos-campaign.example.json](configs/chaos-campaign.example.json):
+
+```bash
+# local/docker
+./scripts/trigger-chaos.sh campaign --file configs/chaos-campaign.example.json
+
+# validate only
+./scripts/trigger-chaos.sh campaign --file configs/chaos-campaign.example.json --dry-run
+
+# scheduled execution (delay in seconds)
+./scripts/trigger-chaos.sh campaign --file configs/chaos-campaign.example.json --schedule-after 120
+
+# adaptive execution (wait until check command exits 0)
+./scripts/trigger-chaos.sh campaign --file configs/chaos-campaign.example.json \
+  --adaptive-check "curl -sf http://localhost:8080/health >/dev/null" --adaptive-poll 10
+```
+
+Kubernetes:
+
+```bash
+./scripts/trigger-chaos-k8s.sh campaign --file configs/chaos-campaign.example.json
+./scripts/trigger-chaos-k8s.sh latency high 60 --service payment-service
+```
+
+### Deploy To K8s With InfraSage Ingest
+
+Use the helper script to apply manifests, upsert secret values, and roll collector:
+
+```bash
+export INFRASAGE_API_KEY=your_key_here
+./scripts/deploy-k8s-infrasage.sh
+```
+
+Notes:
+- Do not commit API keys to this repository.
+- The script creates/updates the Kubernetes secret `infrasage-credentials` at deploy time using `INFRASAGE_API_KEY`.
+
+Optional override:
+
+```bash
+export NAMESPACE=loadgen
+./scripts/deploy-k8s-infrasage.sh
 ```
 
 ## Deploy to k3s
@@ -82,3 +136,33 @@ Configure the InfraSage endpoint in `k8s-deployment.yaml` under the otel-collect
 | `TARGET_URL` | `http://gateway:8080` | Traffic generator target |
 | `REQUESTS_PER_SECOND` | `10` | Traffic generator RPS |
 | `BURST_INTERVAL_SECONDS` | `300` | Seconds between 5x burst periods |
+| `TRAFFIC_SCENARIO_FILE` | (empty) | Optional path to JSON scenario file for weighted traffic actions |
+
+### Traffic Scenario File
+
+The traffic generator supports a scenario file to model weighted, dependency-aware actions.
+
+Use the default example at `configs/traffic-scenario.default.json`:
+
+```bash
+export TRAFFIC_SCENARIO_FILE=configs/traffic-scenario.default.json
+```
+
+Scenario schema:
+
+```json
+{
+  "name": "default-production-like",
+  "description": "Weighted API traffic with dependency-aware actions",
+  "actions": [
+    { "name": "users_list", "weight": 0.30 },
+    { "name": "users_get", "weight": 0.10 },
+    { "name": "auth_login", "weight": 0.15 },
+    { "name": "auth_verify", "weight": 0.05 },
+    { "name": "orders_create", "weight": 0.20 },
+    { "name": "orders_list", "weight": 0.10 },
+    { "name": "orders_get", "weight": 0.05 },
+    { "name": "users_create", "weight": 0.05 }
+  ]
+}
+```

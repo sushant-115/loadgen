@@ -132,6 +132,7 @@ func main() {
 	mux.HandleFunc("POST /api/auth/verify", proxyHandler("/api/auth/verify", "/api/auth", authURL, "auth-service", authProxy))
 
 	// User routes.
+	mux.HandleFunc("POST /api/users", proxyHandler("/api/users", "/api", userURL, "user-service", userProxy))
 	mux.HandleFunc("GET /api/users/", proxyHandler("/api/users/", "/api", userURL, "user-service", userProxy))
 	mux.HandleFunc("GET /api/users", proxyHandler("/api/users", "/api", userURL, "user-service", userProxy))
 

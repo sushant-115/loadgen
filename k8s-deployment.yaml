@@ -5,7 +5,6 @@ kind: Namespace
 metadata:
   name: loadgen
 
----
 # ConfigMap for OTEL Collector configuration (sends telemetry to InfraSage)
 apiVersion: v1
 kind: ConfigMap
@@ -40,12 +39,11 @@ data:
         endpoint: http://loki.loadgen.svc.cluster.local:3100/loki/api/v1/push
 
       otlphttp/infrasage:
-        endpoint: http://ingestion-gateway.infrasage.svc.cluster.local:8080
+        endpoint: https://api.infrasage.dev
         encoding: json
         compression: none
         headers:
-          "Content-Encoding": ""
-          "X-API-Key": "__INFRASAGE_API_KEY__"
+          "X-API-Key": "${env:INFRASAGE_API_KEY}"
 
       debug:
         verbosity: basic
@@ -317,6 +315,11 @@ spec:
         env:
         - name: GOGC
           value: "80"
+        - name: INFRASAGE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: infrasage-credentials
+              key: api-key
       volumes:
       - name: config
         configMap:
