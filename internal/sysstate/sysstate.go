@@ -11,14 +11,114 @@
 //	55% chance: full epoch is quiet (health stays at 1.0)
 //	45% chance: incident epoch
 //	  └── [quiet period] → [ramp-down] → [peak] → [recovery] → [quiet]
+//
+// Manual injection: call ForceScenario(name, duration) to immediately override
+// the epoch-based computation with a specific incident. All probe functions
+// (HealthScore, ActiveFaultNames, etc.) honour the forced scenario until its
+// deadline. ClearForce() cancels it early.
 package sysstate
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"strings"
+	"sync"
 	"time"
 )
+
+// ---------------------------------------------------------------------------
+// Force override — in-process manual anomaly injection
+// ---------------------------------------------------------------------------
+
+// forcedState holds an active manual override. It is nil when the system runs
+// in normal epoch-based mode.
+type forcedState struct {
+	inc   *incident
+	until time.Time
+}
+
+var (
+	forceMu    sync.RWMutex
+	forced     *forcedState
+)
+
+// ForceScenario locks the system into a named incident scenario for the
+// specified duration, overriding the normal epoch-based calculation. All
+// telemetry signals (health, faults, latency scaling, error rates) reflect the
+// forced scenario immediately.
+//
+// Valid scenario names: db_contention, payment_degradation,
+// auth_service_degradation, network_saturation, memory_pressure.
+func ForceScenario(name string, duration time.Duration) error {
+	var found *incident
+	for i := range incidents {
+		if incidents[i].Name == name {
+			found = &incidents[i]
+			break
+		}
+	}
+	if found == nil {
+		names := make([]string, len(incidents))
+		for i, inc := range incidents {
+			names[i] = inc.Name
+		}
+		return fmt.Errorf("unknown scenario %q; valid names: %s", name, strings.Join(names, ", "))
+	}
+
+	forceMu.Lock()
+	forced = &forcedState{inc: found, until: time.Now().Add(duration)}
+	forceMu.Unlock()
+	return nil
+}
+
+// ClearForce cancels any active manual override and returns the system to
+// epoch-based health computation.
+func ClearForce() {
+	forceMu.Lock()
+	forced = nil
+	forceMu.Unlock()
+}
+
+// ForceStatus returns a snapshot of the current manual override state for the
+// /anomaly/status API response.
+func ForceStatus() map[string]any {
+	forceMu.RLock()
+	defer forceMu.RUnlock()
+	if forced == nil || time.Now().After(forced.until) {
+		return map[string]any{
+			"active":   false,
+			"scenario": "",
+			"expires":  "",
+		}
+	}
+	return map[string]any{
+		"active":        true,
+		"scenario":      forced.inc.Name,
+		"expires":       forced.until.UTC().Format(time.RFC3339),
+		"remaining_sec": int(time.Until(forced.until).Seconds()),
+	}
+}
+
+// ListScenarios returns the names of all available scenarios.
+func ListScenarios() []string {
+	names := make([]string, len(incidents))
+	for i, inc := range incidents {
+		names[i] = inc.Name
+	}
+	return names
+}
+
+// forcedIncident returns the active forced incident if one is set and not
+// expired; otherwise returns nil.
+func forcedIncident() *incident {
+	forceMu.RLock()
+	defer forceMu.RUnlock()
+	if forced == nil || time.Now().After(forced.until) {
+		return nil
+	}
+	return forced.inc
+}
 
 // FaultType is a bitmask of named fault conditions.
 type FaultType uint32
@@ -30,6 +130,12 @@ const (
 	FaultAuthService
 	FaultNetworkCongestion
 	FaultMemoryPressure
+	// New complex fault types — each requires correlating multiple signal kinds.
+	FaultCacheStampede    // hot-key eviction storm → DB read amplification
+	FaultConnectionPool   // DB connection pool exhaustion → bimodal p50/p99 latency
+	FaultRetryStorm       // payment intermittent failure → order retry amplification
+	FaultClockSkew        // NTP drift → JWT nbf validation fails ~35% of verify calls
+	FaultQueueBackpressure // slow notification consumer → queue depth grows → order latency
 )
 
 var faultNames = map[FaultType]string{
@@ -38,6 +144,11 @@ var faultNames = map[FaultType]string{
 	FaultAuthService:       "auth_service",
 	FaultNetworkCongestion: "network_congestion",
 	FaultMemoryPressure:    "memory_pressure",
+	FaultCacheStampede:     "cache_stampede",
+	FaultConnectionPool:    "connection_pool",
+	FaultRetryStorm:        "retry_storm",
+	FaultClockSkew:         "clock_skew",
+	FaultQueueBackpressure: "queue_backpressure",
 }
 
 // incident describes one named fault scenario with causal structure.
@@ -97,6 +208,88 @@ var incidents = []incident{
 		RecoverDuration: 12 * time.Minute,
 		PeakHealth:      0.30,
 	},
+	// ---- Complex multi-signal scenarios ----
+	//
+	// cache_stampede: hot-key eviction storm.
+	//   Clues: cache.hit drops to ~0 (metrics) + DB read latency/errors spike (traces)
+	//          + cache latency DROPS (empty = fast, which is counter-intuitive)
+	//          + memory metrics look normal (data was evicted, not OOM)
+	//   Root cause: cache layer, NOT the DB itself.
+	{
+		Name:            "cache_stampede",
+		PrimaryFault:    FaultCacheStampede,
+		CascadeFaults:   FaultDBContention,
+		RampDuration:    2 * time.Minute,
+		PeakDuration:    8 * time.Minute,
+		RecoverDuration: 6 * time.Minute,
+		PeakHealth:      0.20,
+	},
+	// connection_pool_exhaustion: DB connection pool saturated.
+	//   Clues: p50 DB latency normal (lucky callers get a free slot)
+	//          + p99/p999 extreme ~10-30s (callers stuck waiting for slot)
+	//          + error rate low initially then climbing as wait timeouts hit
+	//          + throughput normal → then drops suddenly when timeouts cascade
+	//          + logs show "connection pool wait" warnings
+	//   Root cause: pool sized too small, NOT a slow DB or bad query.
+	{
+		Name:            "connection_pool_exhaustion",
+		PrimaryFault:    FaultConnectionPool,
+		CascadeFaults:   FaultDBContention,
+		RampDuration:    3 * time.Minute,
+		PeakDuration:    10 * time.Minute,
+		RecoverDuration: 8 * time.Minute,
+		PeakHealth:      0.18,
+	},
+	// retry_amplification: partial payment failures trigger order-service retries.
+	//   Clues: order-service QPS normal; payment-service QPS 3× higher (retry fan-out)
+	//          + trace spans show 3 payment_attempt events per order root span
+	//          + payment spans carry retry_attempt=1/2/3 attributes
+	//          + payment error rate climbs OVER TIME as service drowns under retry load
+	//          + order latency high only because of backoff sleep between retries
+	//   Root cause: aggressive retry policy in order-service, NOT a payment infrastructure failure.
+	{
+		Name:            "retry_amplification",
+		PrimaryFault:    FaultRetryStorm,
+		CascadeFaults:   FaultPaymentGateway,
+		RampDuration:    3 * time.Minute,
+		PeakDuration:    9 * time.Minute,
+		RecoverDuration: 6 * time.Minute,
+		PeakHealth:      0.22,
+	},
+	// clock_skew_auth: NTP desync causes JWT "not-before" check to fail intermittently.
+	//   Clues: auth error rate ~35% but NOT 100% (would be 100% for a real outage)
+	//          + ONLY /verify-token endpoint affected; /login path error-free
+	//          + errors are HTTP 401 (Unauthorized), NOT 500 (Internal Server Error)
+	//          + gateway logs show intermittent 401s but no 5xx
+	//          + user/order services see 401s on auth calls, not on their own DB calls
+	//          + log event message: "token not yet valid: clock skew detected"
+	//   Root cause: time drift on auth service host, NOT bad credentials or code bug.
+	{
+		Name:            "clock_skew_auth",
+		PrimaryFault:    FaultClockSkew,
+		CascadeFaults:   FaultAuthService,
+		RampDuration:    90 * time.Second,
+		PeakDuration:    6 * time.Minute,
+		RecoverDuration: 4 * time.Minute,
+		PeakHealth:      0.28,
+	},
+	// queue_consumer_lag: notification worker GC pressure → slow message processing.
+	//   Clues: notification processing latency high (traces on consumer side)
+	//          + queue depth metric rising (queue.depth gauge)
+	//          + order-service p99 latency climbs even though DB + payment are healthy
+	//          + order spans show queue.publish span taking seconds (backpressure)
+	//          + notification logs show "slow consumer: processing backlog"
+	//          + DB latency, payment latency: both normal (eliminates those suspects)
+	//   Root cause: notification consumer throughput collapse, NOT order or DB.
+	{
+		Name:            "queue_consumer_lag",
+		PrimaryFault:    FaultQueueBackpressure,
+		CascadeFaults:   FaultMemoryPressure,
+		RampDuration:    4 * time.Minute,
+		PeakDuration:    8 * time.Minute,
+		RecoverDuration: 10 * time.Minute,
+		PeakHealth:      0.25,
+	},
 }
 
 // epochDuration is the length of one time epoch. Scenarios are scheduled
@@ -127,8 +320,12 @@ func epochInfo(epochNum int64) epochData {
 }
 
 // healthAt computes the system health score in [0.0, 1.0] for a moment in time.
-// All services independently compute the same value for any given timestamp.
+// If a manual force override is active it takes priority over the epoch schedule.
 func healthAt(t time.Time) float64 {
+	if fi := forcedIncident(); fi != nil {
+		// Forced: expose peak health immediately (no ramp, already in crisis).
+		return fi.PeakHealth
+	}
 	epochStart := t.Truncate(epochDuration)
 	epochNum := epochStart.Unix() / int64(epochDuration.Seconds())
 	ed := epochInfo(epochNum)
@@ -160,6 +357,9 @@ func healthAt(t time.Time) float64 {
 
 // activeFaultsAt returns the active fault bitmask at time t.
 func activeFaultsAt(t time.Time) FaultType {
+	if fi := forcedIncident(); fi != nil {
+		return fi.PrimaryFault | fi.CascadeFaults
+	}
 	health := healthAt(t)
 	if health >= 0.95 {
 		return FaultNone
@@ -182,6 +382,9 @@ func activeFaultsAt(t time.Time) FaultType {
 
 // stateNameAt returns the human-readable phase name at time t.
 func stateNameAt(t time.Time) string {
+	if fi := forcedIncident(); fi != nil {
+		return "critical" // forced scenarios are immediately at peak
+	}
 	epochStart := t.Truncate(epochDuration)
 	epochNum := epochStart.Unix() / int64(epochDuration.Seconds())
 	ed := epochInfo(epochNum)
@@ -224,6 +427,16 @@ func HealthScore() float64 {
 // Use this instead of HealthScore() for per-service probability scaling so that
 // a payment degradation incident does not erroneously degrade the DB or auth.
 func FaultHealth(ft FaultType) float64 {
+	// Check forced override first.
+	if fi := forcedIncident(); fi != nil {
+		if fi.PrimaryFault == ft {
+			return math.Max(fi.PeakHealth*0.5, 0.01)
+		}
+		if fi.CascadeFaults&ft != 0 {
+			return math.Max(fi.PeakHealth*0.75, 0.01)
+		}
+		return 1.0
+	}
 	t := time.Now()
 	health := healthAt(t)
 	if health >= 0.95 {

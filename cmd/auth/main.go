@@ -62,8 +62,9 @@ func main() {
 	})
 	mux.Handle("GET /metrics", telemetry.PrometheusHandler())
 
-	// Chaos endpoints.
+	// Chaos and anomaly injection endpoints.
 	chaos.RegisterChaosEndpoints(mux)
+	sysstate.RegisterEndpoints(mux)
 
 	// Auth endpoints.
 	mux.HandleFunc("POST /login", handleLogin)
@@ -219,6 +220,21 @@ func handleVerify(w http.ResponseWriter, r *http.Request) {
 		trace.WithAttributes(attribute.String("auth.operation", "verify")),
 	)
 	defer span.End()
+
+	// clock_skew_auth scenario: NTP drift causes JWT "not-before" check to fail
+	// for ~35% of verify calls. ONLY this handler is affected — /login is fine.
+	// The diagnostic clue: intermittent 401s with this specific message, never 5xx,
+	// and /login traces look completely clean.
+	if rand.Float64() < sysstate.ScaledErrorRate(0, 0.35, sysstate.FaultHealth(sysstate.FaultClockSkew)) {
+		span.SetAttributes(attribute.Bool("auth.clock_skew_reject", true))
+		span.SetStatus(codes.Error, "clock skew")
+		slog.WarnContext(ctx, "token not yet valid: clock skew detected",
+			"skew_scenario", "nbf_check_failed",
+			"trace_id", span.SpanContext().TraceID().String(),
+		)
+		http.Error(w, `{"error":"token not yet valid: clock skew detected"}`, http.StatusUnauthorized)
+		return
+	}
 
 	// Internal error rate scales from ~1% (healthy) to ~20% during auth degradation.
 	if rand.Float64() < sysstate.ScaledErrorRate(0.01, 0.20, sysstate.FaultHealth(sysstate.FaultAuthService)) {

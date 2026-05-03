@@ -105,6 +105,7 @@ func main() {
 	})
 	mux.Handle("GET /metrics", telemetry.PrometheusHandler())
 	chaos.RegisterChaosEndpoints(mux)
+	sysstate.RegisterEndpoints(mux)
 
 	handler := middleware.Chain(serviceName, slog.Default(), mux)
 
@@ -153,6 +154,21 @@ func handleProcess(w http.ResponseWriter, r *http.Request) {
 	)
 	defer span.End()
 
+	// retry_amplification scenario: tag spans with the retry attempt number
+	// so that traces for the same order show attempt=1, 2, 3 child spans.
+	// The diagnostic clue: payment QPS ~3× order QPS; spans show duplicate
+	// order IDs with increasing retry_attempt values.
+	if retryAttempt := r.Header.Get("X-Retry-Attempt"); retryAttempt != "" {
+		span.SetAttributes(attribute.String("payment.retry_attempt", retryAttempt))
+		if sysstate.IsActive(sysstate.FaultRetryStorm) {
+			slog.WarnContext(ctx, "retry amplification detected: payment receiving retried request",
+				"order_id", req.OrderID,
+				"retry_attempt", retryAttempt,
+				"diagnostic_hint", "order QPS:payment QPS ratio exceeded 1:1 — retry storm in progress",
+			)
+		}
+	}
+
 	// Inject chaos latency.
 	if chaos.IsActive(chaos.LatencyInjection) {
 		delay := time.Duration(float64(500*time.Millisecond) * chaos.GetIntensity(chaos.LatencyInjection))
@@ -178,6 +194,20 @@ func handleProcess(w http.ResponseWriter, r *http.Request) {
 	paymentHealth := sysstate.FaultHealth(sysstate.FaultPaymentGateway)
 	timeoutProb := sysstate.ScaledErrorRate(0.01, 0.25, paymentHealth)
 	failureProb := sysstate.ScaledErrorRate(0.05, 0.40, paymentHealth)
+
+	// retry_amplification: the storm is self-reinforcing. As retries flood in,
+	// the service degrades further. The initial failure rate (20%) triggers 3×
+	// retries; the resulting load doubles to failure rate, creating a feedback loop.
+	// Span attribute payment.retry_attempt lets you spot the amplification ratio.
+	if sysstate.IsActive(sysstate.FaultRetryStorm) {
+		retryStormHealth := sysstate.FaultHealth(sysstate.FaultRetryStorm)
+		// Start with a modest 20% initial failure rate that triggers retries;
+		// as the service drowns under retry load, push it toward 70%.
+		retryFailureBoost := sysstate.ScaledErrorRate(0.20, 0.70, retryStormHealth)
+		if retryFailureBoost > failureProb {
+			failureProb = retryFailureBoost
+		}
+	}
 
 	roll := rand.Float64()
 	var status string

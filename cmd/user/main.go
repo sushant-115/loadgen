@@ -65,6 +65,7 @@ func main() {
 	mux.Handle("/metrics", telemetry.PrometheusHandler())
 
 	chaos.RegisterChaosEndpoints(mux)
+	sysstate.RegisterEndpoints(mux)
 
 	handler := middleware.Chain(serviceName, logger, mux)
 

@@ -18,6 +18,7 @@ import (
 	"github.com/loadgen/internal/chaos"
 	"github.com/loadgen/internal/middleware"
 	"github.com/loadgen/internal/platform"
+	"github.com/loadgen/internal/sysstate"
 	"github.com/loadgen/internal/telemetry"
 
 	"go.opentelemetry.io/otel"
@@ -84,6 +85,7 @@ func main() {
 	mux.Handle("/metrics", telemetry.PrometheusHandler())
 
 	chaos.RegisterChaosEndpoints(mux)
+	sysstate.RegisterEndpoints(mux)
 
 	handler := middleware.Chain(serviceName, logger, mux)
 
@@ -345,19 +347,25 @@ func callPaymentService(ctx context.Context, order Order) error {
 			attribute.Int("attempt", attempt),
 		))
 
-		err := doPaymentRequest(ctx, payload)
+		err := doPaymentRequest(ctx, payload, attempt)
 		if err == nil {
 			return nil
 		}
 
 		lastErr = err
-		logger.WarnContext(ctx, "payment call failed, retrying",
+		logFields := []any{
 			"attempt", attempt,
 			"max_retries", maxRetries,
 			"error", err,
 			"order_id", order.OrderID,
 			"trace_id", span.SpanContext().TraceID().String(),
-			"span_id", span.SpanContext().SpanID().String())
+			"span_id", span.SpanContext().SpanID().String(),
+		}
+		if attempt > 1 && sysstate.IsActive(sysstate.FaultRetryStorm) {
+			logFields = append(logFields, "retry_amplification", true,
+				"diagnostic_hint", "high retry rate amplifying payment load — check payment QPS vs order QPS ratio")
+		}
+		logger.WarnContext(ctx, "payment call failed, retrying", logFields...)
 
 		if attempt < maxRetries {
 			// Exponential backoff: 100ms, 200ms.
@@ -371,7 +379,7 @@ func callPaymentService(ctx context.Context, order Order) error {
 	return fmt.Errorf("payment failed after %d attempts: %w", maxRetries, lastErr)
 }
 
-func doPaymentRequest(ctx context.Context, payload []byte) error {
+func doPaymentRequest(ctx context.Context, payload []byte, attempt int) error {
 	url := paymentServiceURL + "/process"
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
@@ -379,6 +387,10 @@ func doPaymentRequest(ctx context.Context, payload []byte) error {
 		return fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Carry retry attempt number so payment service can tag its own spans.
+	if attempt > 1 {
+		req.Header.Set("X-Retry-Attempt", fmt.Sprintf("%d", attempt))
+	}
 
 	// Propagate trace context to downstream service.
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))

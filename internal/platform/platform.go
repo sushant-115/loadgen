@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -46,6 +47,7 @@ func (db *DB) Insert(ctx context.Context, table, id string, record any) error {
 	defer span.End()
 
 	time.Sleep(distribution.ScaledDuration(3, 0.6, sysstate.FaultHealth(sysstate.FaultDBContention)))
+	applyConnectionPoolDelay(span)
 	applyDBSlowChaosDelay()
 
 	raw, err := json.Marshal(record)
@@ -73,6 +75,7 @@ func (db *DB) Get(ctx context.Context, table, id string, dest any) error {
 	defer span.End()
 
 	time.Sleep(distribution.ScaledDuration(2, 0.5, sysstate.FaultHealth(sysstate.FaultDBContention)))
+	applyConnectionPoolDelay(span)
 	applyDBSlowChaosDelay()
 
 	db.mu.RLock()
@@ -96,6 +99,7 @@ func (db *DB) List(ctx context.Context, table string) ([]json.RawMessage, error)
 	defer span.End()
 
 	time.Sleep(distribution.ScaledDuration(5, 0.7, sysstate.FaultHealth(sysstate.FaultDBContention)))
+	applyConnectionPoolDelay(span)
 	applyDBSlowChaosDelay()
 
 	db.mu.RLock()
@@ -119,6 +123,7 @@ func (db *DB) Update(ctx context.Context, table, id string, record any) error {
 	defer span.End()
 
 	time.Sleep(distribution.ScaledDuration(3, 0.6, sysstate.FaultHealth(sysstate.FaultDBContention)))
+	applyConnectionPoolDelay(span)
 	applyDBSlowChaosDelay()
 
 	raw, err := json.Marshal(record)
@@ -163,6 +168,20 @@ func (c *Cache) Get(ctx context.Context, key string) ([]byte, bool) {
 	defer span.End()
 
 	time.Sleep(distribution.ScaledDuration(1, 0.3, sysstate.FaultHealth(sysstate.FaultMemoryPressure)))
+
+	// cache_stampede: hot-key eviction — most cache reads miss, forcing all
+	// callers to go to the DB. The counter-intuitive signal: cache latency DROPS
+	// (empty cache = fast lookup) while DB latency/errors explode.
+	if sysstate.IsActive(sysstate.FaultCacheStampede) {
+		evictProb := sysstate.ScaledErrorRate(0, 0.90, sysstate.FaultHealth(sysstate.FaultCacheStampede))
+		if rand.Float64() < evictProb {
+			span.SetAttributes(
+				attribute.Bool("cache.hit", false),
+				attribute.Bool("cache.evicted", true),
+			)
+			return nil, false
+		}
+	}
 
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -306,16 +325,55 @@ func applyDBSlowChaosDelay() {
 }
 
 func applyQueueBacklogDelay() {
+	// Fault-based queue backpressure: notification consumer lag causes publish to block.
+	if sysstate.IsActive(sysstate.FaultQueueBackpressure) {
+		queueHealth := sysstate.FaultHealth(sysstate.FaultQueueBackpressure)
+		extra := distribution.ScaledDuration(50, 1.5, queueHealth)
+		slog.Debug("queue backpressure delay",
+			"extra_ms", extra.Milliseconds(),
+			"queue_health", queueHealth,
+		)
+		time.Sleep(extra)
+	}
+	// Chaos-based queue backlog (manual chaos injection, unchanged).
 	if !chaos.IsActive(chaos.QueueBacklog) {
 		return
 	}
-	// Simulate queue pressure with variable consumer/publish delay.
 	intensity := chaos.GetIntensity(chaos.QueueBacklog)
 	extra := time.Duration(float64(900*time.Millisecond) * intensity)
 	if extra < 20*time.Millisecond {
 		extra = 20 * time.Millisecond
 	}
 	time.Sleep(extra)
+}
+
+// applyConnectionPoolDelay simulates connection pool exhaustion: a fraction of
+// DB calls get stuck waiting for a free slot, producing bimodal p50/p99 latency.
+// The diagnostic puzzle: p50 looks fine, only p99/p999 are extreme. Most
+// monitoring alerts fire on avg latency first, so this goes undetected longer.
+func applyConnectionPoolDelay(span trace.Span) {
+	if !sysstate.IsActive(sysstate.FaultConnectionPool) {
+		return
+	}
+	poolHealth := sysstate.FaultHealth(sysstate.FaultConnectionPool)
+	// At peak health=0.18 roughly 45% of callers wait for a pool slot.
+	waitProb := sysstate.ScaledErrorRate(0, 0.45, poolHealth)
+	if rand.Float64() >= waitProb {
+		return
+	}
+	// Wait time: 8-20 s (simulates a saturated pool queue).
+	wait := 8*time.Second + time.Duration(rand.Float64()*12*1000)*time.Millisecond
+	if span != nil {
+		span.SetAttributes(
+			attribute.Bool("db.connection_pool_wait", true),
+			attribute.Int64("db.pool_wait_ms", wait.Milliseconds()),
+		)
+	}
+	slog.Warn("connection pool exhausted: waiting for slot",
+		"wait_ms", wait.Milliseconds(),
+		"pool_health", poolHealth,
+	)
+	time.Sleep(wait)
 }
 
 // ---------------------------------------------------------------------------

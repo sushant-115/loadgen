@@ -143,6 +143,7 @@ func main() {
 		json.NewEncoder(w).Encode(stats.snapshot())
 	})
 	chaos.RegisterChaosEndpoints(mux)
+	sysstate.RegisterEndpoints(mux)
 
 	srv := &http.Server{
 		Addr:    ":8085",
@@ -220,7 +221,24 @@ func handleOrderCreated(ctx context.Context, msg platform.Message) error {
 	// Processing latency scales with overall system health.
 	health := sysstate.HealthScore()
 	start := time.Now()
-	time.Sleep(distribution.ScaledDuration(150, 0.8, health))
+
+	// queue_consumer_lag: slow consumer processing that causes queue backpressure.
+	// The diagnostic clues: notification processing_ms is high (this log field),
+	// order-service queue.publish spans are slow (backpressure propagated by
+	// platform.go), but DB and payment latencies remain normal.
+	if sysstate.IsActive(sysstate.FaultQueueBackpressure) {
+		queueHealth := sysstate.FaultHealth(sysstate.FaultQueueBackpressure)
+		consumerDelay := distribution.ScaledDuration(150, 1.8, queueHealth)
+		time.Sleep(consumerDelay)
+		slog.WarnContext(ctx, "slow consumer: processing backlog",
+			"order_id", evt.OrderID,
+			"consumer_delay_ms", consumerDelay.Milliseconds(),
+			"queue_health", queueHealth,
+			"diagnostic_hint", "notification consumer throughput degraded — check queue depth metric",
+		)
+	} else {
+		time.Sleep(distribution.ScaledDuration(150, 0.8, health))
+	}
 
 	// Failure rate scales from ~3% (healthy) to ~30% (degraded).
 	success := rand.Float64() >= sysstate.ScaledErrorRate(0.03, 0.30, health)

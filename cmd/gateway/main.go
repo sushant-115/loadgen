@@ -16,6 +16,7 @@ import (
 
 	"github.com/loadgen/internal/chaos"
 	"github.com/loadgen/internal/middleware"
+	"github.com/loadgen/internal/sysstate"
 	"github.com/loadgen/internal/telemetry"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -69,8 +70,9 @@ func main() {
 	})
 	mux.Handle("GET /metrics", telemetry.PrometheusHandler())
 
-	// Chaos endpoints.
+	// Chaos and anomaly injection endpoints.
 	chaos.RegisterChaosEndpoints(mux)
+	sysstate.RegisterEndpoints(mux)
 
 	// Proxy routes.
 	proxyHandler := func(pathPrefix, stripPrefix, targetBase, peerService string, proxy *httputil.ReverseProxy) http.HandlerFunc {
