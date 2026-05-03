@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/loadgen/internal/sysstate"
 	"github.com/loadgen/internal/telemetry"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -183,6 +184,16 @@ func main() {
 			return
 
 		case <-burstTimer.C:
+			// Suppress burst during system incidents: real traffic drops when
+			// services are degrading, it does not spike to 5× at the worst time.
+			if sysstate.HealthScore() < 0.7 {
+				slog.Info("burst suppressed: system incident in progress",
+					"health", sysstate.HealthScore(),
+					"state", sysstate.CurrentStateName(),
+				)
+				burstTimer.Reset(time.Duration(cfg.BurstIntervalSeconds) * time.Second)
+				continue
+			}
 			// Burst mode: 5x rate for 30 seconds.
 			burstRPS := cfg.RequestsPerSecond * 5
 			slog.Info("burst mode activated", "rps", burstRPS)
@@ -218,6 +229,8 @@ func sendRequest(ctx context.Context, client *http.Client, baseURL string, picke
 			attribute.String("http.url", url),
 			attribute.String("peer.service", "api-gateway"),
 			attribute.String("traffic.action", plan.Action),
+			attribute.Float64("system.health", sysstate.HealthScore()),
+			attribute.String("system.state", sysstate.CurrentStateName()),
 		),
 	)
 	defer span.End()

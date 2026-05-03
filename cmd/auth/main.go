@@ -16,6 +16,7 @@ import (
 	"github.com/loadgen/internal/chaos"
 	"github.com/loadgen/internal/middleware"
 	"github.com/loadgen/internal/platform"
+	"github.com/loadgen/internal/sysstate"
 	"github.com/loadgen/internal/telemetry"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -146,8 +147,8 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	)
 	defer span.End()
 
-	// ~1% simulated internal error.
-	if rand.Float64() < 0.01 {
+	// Internal error rate scales from ~1% (healthy) to ~20% during auth degradation.
+	if rand.Float64() < sysstate.ScaledErrorRate(0.01, 0.20, sysstate.FaultHealth(sysstate.FaultAuthService)) {
 		span.SetStatus(codes.Error, "internal error")
 		span.RecordError(fmt.Errorf("simulated internal error"))
 		slog.ErrorContext(ctx, "internal error during login", "error", "simulated")
@@ -176,8 +177,8 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ~5% of logins fail with 401 (simulated wrong password).
-	if rand.Float64() < 0.05 {
+	// Wrong-password rate scales from ~5% (healthy) to ~35% during auth degradation.
+	if rand.Float64() < sysstate.ScaledErrorRate(0.05, 0.35, sysstate.FaultHealth(sysstate.FaultAuthService)) {
 		span.SetStatus(codes.Error, "simulated wrong password")
 		slog.WarnContext(ctx, "login failed",
 			"username", req.Username,
@@ -219,8 +220,8 @@ func handleVerify(w http.ResponseWriter, r *http.Request) {
 	)
 	defer span.End()
 
-	// ~1% simulated internal error.
-	if rand.Float64() < 0.01 {
+	// Internal error rate scales from ~1% (healthy) to ~20% during auth degradation.
+	if rand.Float64() < sysstate.ScaledErrorRate(0.01, 0.20, sysstate.FaultHealth(sysstate.FaultAuthService)) {
 		span.SetStatus(codes.Error, "internal error")
 		span.RecordError(fmt.Errorf("simulated internal error"))
 		slog.ErrorContext(ctx, "internal error during verify", "error", "simulated")

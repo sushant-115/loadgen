@@ -16,6 +16,7 @@ import (
 	"github.com/loadgen/internal/chaos"
 	"github.com/loadgen/internal/middleware"
 	"github.com/loadgen/internal/platform"
+	"github.com/loadgen/internal/sysstate"
 	"github.com/loadgen/internal/telemetry"
 
 	"go.opentelemetry.io/otel"
@@ -319,13 +320,17 @@ func updateUser(w http.ResponseWriter, r *http.Request, id string) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-// simulateDBError returns true ~2% of the time to simulate DB failures.
+// simulateDBError returns true at a rate that scales with DB contention health.
+// At full health the rate is ~2%; during a db_contention incident it climbs
+// to ~40%, matching the behaviour visible in traces and metrics.
 func simulateDBError(span trace.Span) bool {
-	if rand.Float64() < 0.02 {
+	dbHealth := sysstate.FaultHealth(sysstate.FaultDBContention)
+	errorRate := sysstate.ScaledErrorRate(0.02, 0.40, dbHealth)
+	if rand.Float64() < errorRate {
 		err := fmt.Errorf("database connection error: timeout after 30s")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		logger.Error("simulated DB error", "error", err)
+		logger.Error("simulated DB error", "error", err, "db_health", dbHealth)
 		return true
 	}
 	return false

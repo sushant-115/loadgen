@@ -17,11 +17,14 @@ import (
 	"time"
 
 	"github.com/loadgen/internal/chaos"
+	"github.com/loadgen/internal/distribution"
 	"github.com/loadgen/internal/platform"
+	"github.com/loadgen/internal/sysstate"
 	"github.com/loadgen/internal/telemetry"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -174,6 +177,13 @@ func main() {
 }
 
 func handleOrderCreated(ctx context.Context, msg platform.Message) error {
+	// Restore the distributed trace context injected by the order-service
+	// publisher so this consumer span becomes a child of the order span,
+	// completing the full traffic → gateway → order → payment → notification
+	// trace tree.
+	if len(msg.TraceCarrier) > 0 {
+		ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(msg.TraceCarrier))
+	}
 	ctx, span := tracer.Start(ctx, "process_notification",
 		trace.WithSpanKind(trace.SpanKindConsumer),
 		trace.WithAttributes(attribute.String("queue.topic", msg.Topic)),
@@ -207,13 +217,13 @@ func handleOrderCreated(ctx context.Context, msg platform.Message) error {
 		time.Sleep(delay)
 	}
 
-	// Simulate processing 50-500ms.
+	// Processing latency scales with overall system health.
+	health := sysstate.HealthScore()
 	start := time.Now()
-	processingMs := 50 + rand.Intn(451)
-	time.Sleep(time.Duration(processingMs) * time.Millisecond)
+	time.Sleep(distribution.ScaledDuration(150, 0.8, health))
 
-	// ~3% failure rate.
-	success := rand.Float64() >= 0.03
+	// Failure rate scales from ~3% (healthy) to ~30% (degraded).
+	success := rand.Float64() >= sysstate.ScaledErrorRate(0.03, 0.30, health)
 	dur := time.Since(start)
 	status := "sent"
 

@@ -8,13 +8,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"sync"
 	"time"
 
 	"github.com/loadgen/internal/chaos"
+	"github.com/loadgen/internal/distribution"
+	"github.com/loadgen/internal/sysstate"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -43,7 +45,7 @@ func (db *DB) Insert(ctx context.Context, table, id string, record any) error {
 	)
 	defer span.End()
 
-	time.Sleep(time.Duration(1+rand.Intn(5)) * time.Millisecond)
+	time.Sleep(distribution.ScaledDuration(3, 0.6, sysstate.FaultHealth(sysstate.FaultDBContention)))
 	applyDBSlowChaosDelay()
 
 	raw, err := json.Marshal(record)
@@ -70,7 +72,7 @@ func (db *DB) Get(ctx context.Context, table, id string, dest any) error {
 	)
 	defer span.End()
 
-	time.Sleep(time.Duration(1+rand.Intn(3)) * time.Millisecond)
+	time.Sleep(distribution.ScaledDuration(2, 0.5, sysstate.FaultHealth(sysstate.FaultDBContention)))
 	applyDBSlowChaosDelay()
 
 	db.mu.RLock()
@@ -93,7 +95,7 @@ func (db *DB) List(ctx context.Context, table string) ([]json.RawMessage, error)
 	)
 	defer span.End()
 
-	time.Sleep(time.Duration(2+rand.Intn(5)) * time.Millisecond)
+	time.Sleep(distribution.ScaledDuration(5, 0.7, sysstate.FaultHealth(sysstate.FaultDBContention)))
 	applyDBSlowChaosDelay()
 
 	db.mu.RLock()
@@ -116,7 +118,7 @@ func (db *DB) Update(ctx context.Context, table, id string, record any) error {
 	)
 	defer span.End()
 
-	time.Sleep(time.Duration(1+rand.Intn(5)) * time.Millisecond)
+	time.Sleep(distribution.ScaledDuration(3, 0.6, sysstate.FaultHealth(sysstate.FaultDBContention)))
 	applyDBSlowChaosDelay()
 
 	raw, err := json.Marshal(record)
@@ -160,7 +162,7 @@ func (c *Cache) Get(ctx context.Context, key string) ([]byte, bool) {
 	)
 	defer span.End()
 
-	time.Sleep(time.Duration(1+rand.Intn(2)) * time.Millisecond)
+	time.Sleep(distribution.ScaledDuration(1, 0.3, sysstate.FaultHealth(sysstate.FaultMemoryPressure)))
 
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -176,7 +178,7 @@ func (c *Cache) Set(ctx context.Context, key string, value []byte) {
 	)
 	defer span.End()
 
-	time.Sleep(time.Duration(1+rand.Intn(2)) * time.Millisecond)
+	time.Sleep(distribution.ScaledDuration(1, 0.3, sysstate.FaultHealth(sysstate.FaultMemoryPressure)))
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -200,9 +202,12 @@ func (c *Cache) Delete(ctx context.Context, key string) {
 // ---------------------------------------------------------------------------
 
 // Message represents a queue message.
+// TraceCarrier propagates the W3C traceparent of the publishing span so that
+// consumers can create child spans linked to the producer's trace tree.
 type Message struct {
-	Topic   string          `json:"topic"`
-	Payload json.RawMessage `json:"payload"`
+	Topic        string            `json:"topic"`
+	Payload      json.RawMessage   `json:"payload"`
+	TraceCarrier map[string]string `json:"-"`
 }
 
 // Handler processes a queue message.
@@ -230,7 +235,10 @@ func (q *Queue) Publish(ctx context.Context, topic string, payload any) error {
 	if err != nil {
 		return err
 	}
-	msg := Message{Topic: topic, Payload: raw}
+	// Inject trace context into the message so consumers can continue the trace.
+	carrier := make(map[string]string)
+	otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(carrier))
+	msg := Message{Topic: topic, Payload: raw, TraceCarrier: carrier}
 
 	applyQueueBacklogDelay()
 

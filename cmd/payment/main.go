@@ -15,8 +15,10 @@ import (
 	"time"
 
 	"github.com/loadgen/internal/chaos"
+	"github.com/loadgen/internal/distribution"
 	"github.com/loadgen/internal/middleware"
 	"github.com/loadgen/internal/platform"
+	"github.com/loadgen/internal/sysstate"
 	"github.com/loadgen/internal/telemetry"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -170,33 +172,43 @@ func handleProcess(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 
-	// Determine outcome.
+	// Determine outcome using sysstate-aware probabilities so that during a
+	// payment degradation incident the failure and timeout rates escalate
+	// in lockstep with all other telemetry signals.
+	paymentHealth := sysstate.FaultHealth(sysstate.FaultPaymentGateway)
+	timeoutProb := sysstate.ScaledErrorRate(0.01, 0.25, paymentHealth)
+	failureProb := sysstate.ScaledErrorRate(0.05, 0.40, paymentHealth)
+
 	roll := rand.Float64()
 	var status string
 	switch {
-	case roll < 0.01:
-		// ~1% timeout simulation.
-		slog.WarnContext(ctx, "payment timeout", "payment_id", paymentID)
+	case roll < timeoutProb:
+		// Timeout: probability scales from ~1% (healthy) to ~25% (degraded).
+		slog.WarnContext(ctx, "payment timeout",
+			"payment_id", paymentID,
+			"system_health", paymentHealth,
+		)
 		span.SetAttributes(attribute.String("payment.status", "timeout"))
 		time.Sleep(5 * time.Second)
 		status = "failed"
-	case roll < 0.06:
-		// ~5% failure.
+	case roll < timeoutProb+failureProb:
+		// Failure: probability scales from ~5% (healthy) to ~40% (degraded).
 		reasons := []string{"insufficient_funds", "card_declined", "expired_card", "processing_error"}
 		reason := reasons[rand.Intn(len(reasons))]
 		slog.ErrorContext(ctx, "payment failed",
 			"payment_id", paymentID,
 			"reason", reason,
+			"system_health", paymentHealth,
 		)
 		span.SetAttributes(
 			attribute.String("payment.status", "failed"),
 			attribute.String("payment.failure_reason", reason),
 		)
-		simulateLatency(50, 200)
+		time.Sleep(distribution.ScaledDuration(100, 0.7, paymentHealth))
 		status = "failed"
 	default:
-		// Success.
-		simulateLatency(50, 200)
+		// Success: processing latency also scales with payment gateway health.
+		time.Sleep(distribution.ScaledDuration(100, 0.7, paymentHealth))
 		status = "completed"
 		slog.InfoContext(ctx, "payment completed",
 			"payment_id", paymentID,

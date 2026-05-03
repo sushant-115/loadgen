@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/loadgen/internal/chaos"
+	"github.com/loadgen/internal/sysstate"
 	"github.com/loadgen/internal/telemetry"
 
 	"go.opentelemetry.io/otel"
@@ -54,6 +55,14 @@ func Tracing(serviceName string, next http.Handler) http.Handler {
 				attribute.String("chaos.campaign_id", campaignID),
 			))
 		defer span.End()
+
+		// Annotate every span with the live system health so anomaly detectors
+		// can correlate metric/trace anomalies to the active fault scenario.
+		span.SetAttributes(
+			attribute.Float64("system.health_score", sysstate.HealthScore()),
+			attribute.String("system.state", sysstate.CurrentStateName()),
+			attribute.String("system.active_faults", sysstate.ActiveFaultNames()),
+		)
 
 		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(rw, r.WithContext(ctx))
@@ -113,18 +122,29 @@ func Logging(logger *slog.Logger, next http.Handler) http.Handler {
 		span := trace.SpanFromContext(r.Context())
 		sc := span.SpanContext()
 		chaosActive, campaignID, chaosTypes := chaos.ActiveMetadata()
+		durationMs := time.Since(start).Milliseconds()
 
-		logger.Info("request",
+		logArgs := []any{
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", rw.statusCode,
-			"duration_ms", time.Since(start).Milliseconds(),
+			"duration_ms", durationMs,
 			"chaos_active", chaosActive,
 			"chaos_types", chaosTypes,
 			"chaos_campaign", campaignID,
 			"trace_id", sc.TraceID().String(),
 			"span_id", sc.SpanID().String(),
-		)
+			"system_state", sysstate.CurrentStateName(),
+			"system_health", sysstate.HealthScore(),
+		}
+		switch {
+		case rw.statusCode >= 500:
+			logger.ErrorContext(r.Context(), "request error", logArgs...)
+		case rw.statusCode >= 400 || durationMs > 2000:
+			logger.WarnContext(r.Context(), "request slow or failed", logArgs...)
+		default:
+			logger.InfoContext(r.Context(), "request", logArgs...)
+		}
 	})
 }
 
