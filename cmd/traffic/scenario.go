@@ -88,14 +88,15 @@ func defaultScenario() scenario {
 		Name:        "default-production-like",
 		Description: "Weighted API traffic with dependency-aware actions",
 		Actions: []actionSpec{
-			{Name: "users_list", Weight: 0.30},
+			{Name: "users_list", Weight: 0.28},
 			{Name: "users_get", Weight: 0.10},
 			{Name: "auth_login", Weight: 0.15},
 			{Name: "auth_verify", Weight: 0.05},
 			{Name: "orders_create", Weight: 0.20},
 			{Name: "orders_list", Weight: 0.10},
 			{Name: "orders_get", Weight: 0.05},
-			{Name: "users_create", Weight: 0.05},
+			{Name: "users_create", Weight: 0.04},
+			{Name: "user_upgrade", Weight: 0.03}, // conversion event
 		},
 	}
 }
@@ -213,6 +214,13 @@ func buildPlan(action string, actors *actorState) requestPlan {
 			orderID = "ORD-001"
 		}
 		return requestPlan{Action: action, Method: "GET", Path: "/api/orders/" + orderID}
+	case "user_upgrade":
+		// Conversion event — pick an existing user and upgrade them.
+		userID := actors.randomUser()
+		if userID == "" {
+			userID = fmt.Sprintf("%d", rand.Intn(3)+1)
+		}
+		return requestPlan{Action: action, Method: "POST", Path: "/api/users/" + userID + "/upgrade"}
 	case "orders_create":
 		userID := actors.randomUser()
 		if userID == "" {

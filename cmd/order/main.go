@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/loadgen/internal/chaos"
+	"github.com/loadgen/internal/dimensions"
 	"github.com/loadgen/internal/middleware"
 	"github.com/loadgen/internal/platform"
 	"github.com/loadgen/internal/sysstate"
@@ -246,6 +247,10 @@ func createOrder(w http.ResponseWriter, r *http.Request) {
 	ctx, span := tracer.Start(r.Context(), "createOrder")
 	defer span.End()
 
+	// Capture business dimensions from the incoming request so we can both
+	// tag this span and propagate them to payment-service below.
+	dims := dimensions.FromHeaders(r)
+
 	var input struct {
 		UserID string      `json:"user_id"`
 		Items  []OrderItem `json:"items"`
@@ -274,6 +279,8 @@ func createOrder(w http.ResponseWriter, r *http.Request) {
 		attribute.String("order.id", order.OrderID),
 		attribute.String("order.user_id", order.UserID),
 		attribute.Float64("order.total", order.Total),
+		attribute.String(dimensions.AttrTenantID, dims.TenantID),
+		attribute.String(dimensions.AttrPaymentGateway, dims.PaymentGateway),
 	)
 
 	// Store order in DB.
@@ -284,8 +291,8 @@ func createOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Call payment service with retry logic.
-	paymentErr := callPaymentService(ctx, order)
+	// Call payment service with retry logic, forwarding the same dimension set.
+	paymentErr := callPaymentService(ctx, order, dims)
 	if paymentErr != nil {
 		order.Status = "payment_failed"
 		_ = db.Update(ctx, "orders", order.OrderID, order)
@@ -323,13 +330,15 @@ func createOrder(w http.ResponseWriter, r *http.Request) {
 // Payment service call with retry
 // ---------------------------------------------------------------------------
 
-func callPaymentService(ctx context.Context, order Order) error {
+func callPaymentService(ctx context.Context, order Order, dims dimensions.Context) error {
 	ctx, span := tracer.Start(ctx, "callPaymentService",
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(
 			attribute.String("peer.service", "payment-service"),
 			attribute.String("order.id", order.OrderID),
 			attribute.Float64("order.total", order.Total),
+			attribute.String(dimensions.AttrTenantID, dims.TenantID),
+			attribute.String(dimensions.AttrPaymentGateway, dims.PaymentGateway),
 		))
 	defer span.End()
 
@@ -347,7 +356,7 @@ func callPaymentService(ctx context.Context, order Order) error {
 			attribute.Int("attempt", attempt),
 		))
 
-		err := doPaymentRequest(ctx, payload, attempt)
+		err := doPaymentRequest(ctx, payload, attempt, dims)
 		if err == nil {
 			return nil
 		}
@@ -379,7 +388,7 @@ func callPaymentService(ctx context.Context, order Order) error {
 	return fmt.Errorf("payment failed after %d attempts: %w", maxRetries, lastErr)
 }
 
-func doPaymentRequest(ctx context.Context, payload []byte, attempt int) error {
+func doPaymentRequest(ctx context.Context, payload []byte, attempt int, dims dimensions.Context) error {
 	url := paymentServiceURL + "/process"
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
@@ -391,6 +400,10 @@ func doPaymentRequest(ctx context.Context, payload []byte, attempt int) error {
 	if attempt > 1 {
 		req.Header.Set("X-Retry-Attempt", fmt.Sprintf("%d", attempt))
 	}
+
+	// Forward business-dimension headers so payment-service can compute
+	// per-gateway failure variance and tag its own spans/logs.
+	dims.ApplyHeaders(req)
 
 	// Propagate trace context to downstream service.
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))

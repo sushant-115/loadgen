@@ -1,0 +1,12 @@
+{
+  "campaign_id": "demo-retry-storm",
+  "target_service": "payment-service",
+  "steps": [
+    {
+      "type": "error_injection",
+      "intensity": 0.50,
+      "duration_seconds": 300,
+      "start_after_seconds": 0
+    }
+  ]
+}

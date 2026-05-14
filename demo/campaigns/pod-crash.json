@@ -1,0 +1,12 @@
+{
+  "campaign_id": "demo-pod-crash",
+  "target_service": "user-service",
+  "steps": [
+    {
+      "type": "pod_crash",
+      "intensity": 1.0,
+      "duration_seconds": 1,
+      "start_after_seconds": 0
+    }
+  ]
+}

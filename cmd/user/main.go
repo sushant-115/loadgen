@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/loadgen/internal/chaos"
+	"github.com/loadgen/internal/dimensions"
 	"github.com/loadgen/internal/middleware"
 	"github.com/loadgen/internal/platform"
 	"github.com/loadgen/internal/sysstate"
@@ -59,6 +60,7 @@ func main() {
 	seedUsers()
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /users/{id}/upgrade", upgradeUserHandler)
 	mux.HandleFunc("/users", usersHandler)
 	mux.HandleFunc("/users/", userByIDHandler)
 	mux.HandleFunc("/health", healthHandler)
@@ -320,6 +322,72 @@ func updateUser(w http.ResponseWriter, r *http.Request, id string) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// upgradeUserHandler emits a `user.upgrade` span representing a conversion
+// event (e.g. trial → pro, pro → enterprise). Plan transitions are picked from
+// the incoming X-Plan header, and ~7% of upgrades fail to simulate billing
+// gateway errors — gives demos a "trial-to-paid conversion rate" span-metric
+// rule that actually has variance to chart.
+func upgradeUserHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	dims := dimensions.FromHeaders(r)
+
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, `{"error":"missing user id"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Decide the plan transition. If the caller sent X-Plan we treat that as
+	// the *destination* plan; otherwise default to "pro".
+	planTo := dims.Plan
+	if planTo == "" {
+		planTo = "pro"
+	}
+	planFrom := "trial"
+	if planTo == "enterprise" {
+		planFrom = "pro"
+	}
+
+	ctx, span := tracer.Start(ctx, "user.upgrade",
+		trace.WithAttributes(
+			attribute.String("user.id", id),
+			attribute.String("plan.from", planFrom),
+			attribute.String("plan.to", planTo),
+			attribute.String(dimensions.AttrTenantID, dims.TenantID),
+			attribute.String(dimensions.AttrCustomerTier, dims.CustomerTier),
+		))
+	defer span.End()
+
+	// ~7% billing failures, scaled by payment-gateway health so chaos on
+	// the payment-service cleanly shows up as a conversion-rate drop too.
+	gatewayHealth := sysstate.FaultHealth(sysstate.FaultPaymentGateway)
+	failureProb := sysstate.ScaledErrorRate(0.07, 0.45, gatewayHealth)
+	success := rand.Float64() >= failureProb
+
+	span.SetAttributes(attribute.Bool("success", success))
+
+	if !success {
+		span.SetStatus(codes.Error, "upgrade billing failure")
+		logger.WarnContext(ctx, "upgrade failed",
+			"user_id", id, "plan_from", planFrom, "plan_to", planTo,
+			"tenant_id", dims.TenantID, "payment_gateway", dims.PaymentGateway,
+		)
+		http.Error(w, `{"error":"upgrade failed: billing declined"}`, http.StatusPaymentRequired)
+		return
+	}
+
+	logger.InfoContext(ctx, "user upgraded",
+		"user_id", id, "plan_from", planFrom, "plan_to", planTo,
+		"tenant_id", dims.TenantID, "customer_tier", dims.CustomerTier,
+	)
+	writeJSON(w, http.StatusOK, map[string]string{
+		"user_id":   id,
+		"plan_from": planFrom,
+		"plan_to":   planTo,
+		"status":    "upgraded",
+	})
+}
 
 // simulateDBError returns true at a rate that scales with DB contention health.
 // At full health the rate is ~2%; during a db_contention incident it climbs

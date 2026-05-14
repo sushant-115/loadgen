@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/loadgen/internal/dimensions"
 	"github.com/loadgen/internal/sysstate"
 	"github.com/loadgen/internal/telemetry"
 	"go.opentelemetry.io/otel"
@@ -221,6 +222,11 @@ func sendRequest(ctx context.Context, client *http.Client, baseURL string, picke
 
 	url := baseURL + plan.Path
 
+	// Pick business-dimension context for this synthetic request. Stamped onto
+	// the span here (so the client span shows it) and forwarded via headers
+	// (so every downstream service tags its own spans/logs).
+	dims := dimensions.Pick()
+
 	// Create a span so traffic generator shows up in traces.
 	ctx, span := tracer.Start(ctx, fmt.Sprintf("%s %s", plan.Method, plan.Path),
 		trace.WithSpanKind(trace.SpanKindClient),
@@ -231,6 +237,11 @@ func sendRequest(ctx context.Context, client *http.Client, baseURL string, picke
 			attribute.String("traffic.action", plan.Action),
 			attribute.Float64("system.health", sysstate.HealthScore()),
 			attribute.String("system.state", sysstate.CurrentStateName()),
+			attribute.String(dimensions.AttrTenantID, dims.TenantID),
+			attribute.String(dimensions.AttrRegion, dims.Region),
+			attribute.String(dimensions.AttrCustomerTier, dims.CustomerTier),
+			attribute.String(dimensions.AttrPlan, dims.Plan),
+			attribute.String(dimensions.AttrPaymentGateway, dims.PaymentGateway),
 		),
 	)
 	defer span.End()
@@ -247,6 +258,7 @@ func sendRequest(ctx context.Context, client *http.Client, baseURL string, picke
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	dims.ApplyHeaders(req)
 
 	// Propagate trace context.
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))

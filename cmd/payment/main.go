@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/loadgen/internal/chaos"
+	"github.com/loadgen/internal/dimensions"
 	"github.com/loadgen/internal/distribution"
 	"github.com/loadgen/internal/middleware"
 	"github.com/loadgen/internal/platform"
@@ -144,12 +145,21 @@ func handleProcess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve the gateway from the propagated business-dimension header.
+	// Defaults to "stripe" so health checks and probes still see a valid value.
+	dims := dimensions.FromHeaders(r)
+	gateway := dims.PaymentGateway
+	if gateway == "" {
+		gateway = "stripe"
+	}
+
 	ctx, span := tracer.Start(ctx, "process_payment",
 		trace.WithAttributes(
 			attribute.String("payment.order_id", req.OrderID),
 			attribute.Float64("payment.amount", req.Amount),
 			attribute.String("payment.currency", req.Currency),
 			attribute.String("payment.method", req.Method),
+			attribute.String(dimensions.AttrPaymentGateway, gateway),
 		),
 	)
 	defer span.End()
@@ -194,6 +204,15 @@ func handleProcess(w http.ResponseWriter, r *http.Request) {
 	paymentHealth := sysstate.FaultHealth(sysstate.FaultPaymentGateway)
 	timeoutProb := sysstate.ScaledErrorRate(0.01, 0.25, paymentHealth)
 	failureProb := sysstate.ScaledErrorRate(0.05, 0.40, paymentHealth)
+
+	// Per-gateway variance: stripe baseline, paypal more resilient, adyen most
+	// fragile. Makes degradation visibly heterogeneous across gateways — the
+	// dashboard's payment_gateway pillar will fan out instead of all keys
+	// moving in lockstep, so the on-call engineer can say "stripe is having
+	// issues, paypal is fine" within seconds of the incident firing.
+	gwMult := dimensions.GatewayFailureMultiplier(gateway)
+	timeoutProb *= gwMult
+	failureProb *= gwMult
 
 	// retry_amplification: the storm is self-reinforcing. As retries flood in,
 	// the service degrades further. The initial failure rate (20%) triggers 3×

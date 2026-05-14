@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/loadgen/internal/chaos"
+	"github.com/loadgen/internal/dimensions"
 	"github.com/loadgen/internal/sysstate"
 	"github.com/loadgen/internal/telemetry"
 
@@ -42,6 +43,7 @@ func Tracing(serviceName string, next http.Handler) http.Handler {
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		chaosActive, campaignID, chaosTypes := chaos.ActiveMetadata()
+		dims := dimensions.FromHeaders(r)
 
 		ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
 		ctx, span := tracer.Start(ctx, r.Method+" "+r.URL.Path,
@@ -63,6 +65,18 @@ func Tracing(serviceName string, next http.Handler) http.Handler {
 			attribute.String("system.state", sysstate.CurrentStateName()),
 			attribute.String("system.active_faults", sysstate.ActiveFaultNames()),
 		)
+
+		// Attach business-dimension attributes — only when present, so internal
+		// health checks/probes don't pollute the trace stream with empty tags.
+		if !dims.IsEmpty() {
+			span.SetAttributes(
+				attribute.String(dimensions.AttrTenantID, dims.TenantID),
+				attribute.String(dimensions.AttrRegion, dims.Region),
+				attribute.String(dimensions.AttrCustomerTier, dims.CustomerTier),
+				attribute.String(dimensions.AttrPlan, dims.Plan),
+				attribute.String(dimensions.AttrPaymentGateway, dims.PaymentGateway),
+			)
+		}
 
 		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(rw, r.WithContext(ctx))
@@ -122,6 +136,7 @@ func Logging(logger *slog.Logger, next http.Handler) http.Handler {
 		span := trace.SpanFromContext(r.Context())
 		sc := span.SpanContext()
 		chaosActive, campaignID, chaosTypes := chaos.ActiveMetadata()
+		dims := dimensions.FromHeaders(r)
 		durationMs := time.Since(start).Milliseconds()
 
 		logArgs := []any{
@@ -136,6 +151,15 @@ func Logging(logger *slog.Logger, next http.Handler) http.Handler {
 			"span_id", sc.SpanID().String(),
 			"system_state", sysstate.CurrentStateName(),
 			"system_health", sysstate.HealthScore(),
+		}
+		if !dims.IsEmpty() {
+			logArgs = append(logArgs,
+				"tenant_id", dims.TenantID,
+				"region", dims.Region,
+				"customer_tier", dims.CustomerTier,
+				"plan", dims.Plan,
+				"payment_gateway", dims.PaymentGateway,
+			)
 		}
 		switch {
 		case rw.statusCode >= 500:

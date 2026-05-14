@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/loadgen/internal/chaos"
+	"github.com/loadgen/internal/dimensions"
 	"github.com/loadgen/internal/middleware"
 	"github.com/loadgen/internal/sysstate"
 	"github.com/loadgen/internal/telemetry"
@@ -94,6 +95,11 @@ func main() {
 				r.Header.Set("X-Request-ID", reqID)
 			}
 
+			// Carry business-dimension tags onto the proxy span so the cross-service
+			// trace view shows tenant / region / customer_tier / plan / gateway
+			// alongside the standard http/peer attributes.
+			dims := dimensions.FromHeaders(r)
+
 			// Start a proxy span marking the downstream peer service.
 			ctx, span := tracer.Start(ctx, "gateway.proxy",
 				trace.WithSpanKind(trace.SpanKindClient),
@@ -102,6 +108,11 @@ func main() {
 					attribute.String("http.path", r.URL.Path),
 					attribute.String("request.id", reqID),
 					attribute.String("peer.service", peerService),
+					attribute.String(dimensions.AttrTenantID, dims.TenantID),
+					attribute.String(dimensions.AttrRegion, dims.Region),
+					attribute.String(dimensions.AttrCustomerTier, dims.CustomerTier),
+					attribute.String(dimensions.AttrPlan, dims.Plan),
+					attribute.String(dimensions.AttrPaymentGateway, dims.PaymentGateway),
 				),
 			)
 			defer span.End()
@@ -137,6 +148,7 @@ func main() {
 	mux.HandleFunc("POST /api/users", proxyHandler("/api/users", "/api", userURL, "user-service", userProxy))
 	mux.HandleFunc("GET /api/users/", proxyHandler("/api/users/", "/api", userURL, "user-service", userProxy))
 	mux.HandleFunc("GET /api/users", proxyHandler("/api/users", "/api", userURL, "user-service", userProxy))
+	mux.HandleFunc("POST /api/users/{id}/upgrade", proxyHandler("/api/users/", "/api", userURL, "user-service", userProxy))
 
 	// Order routes.
 	mux.HandleFunc("POST /api/orders", proxyHandler("/api/orders", "/api", orderURL, "order-service", orderProxy))
