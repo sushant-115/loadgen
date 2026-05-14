@@ -1,0 +1,23 @@
+{
+  "campaign_id": "demo-c-queue-consumer-lag",
+  "steps": [
+    {
+      "type": "queue_backlog",
+      "intensity": 0.80,
+      "duration_seconds": 480,
+      "start_after_seconds": 0
+    },
+    {
+      "type": "latency_injection",
+      "intensity": 0.60,
+      "duration_seconds": 360,
+      "start_after_seconds": 60
+    },
+    {
+      "type": "log_storm",
+      "intensity": 0.50,
+      "duration_seconds": 300,
+      "start_after_seconds": 120
+    }
+  ]
+}

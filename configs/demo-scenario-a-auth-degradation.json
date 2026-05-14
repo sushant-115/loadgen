@@ -1,0 +1,23 @@
+{
+  "campaign_id": "demo-a-auth-degradation",
+  "steps": [
+    {
+      "type": "error_injection",
+      "intensity": 0.35,
+      "duration_seconds": 300,
+      "start_after_seconds": 0
+    },
+    {
+      "type": "latency_injection",
+      "intensity": 0.55,
+      "duration_seconds": 240,
+      "start_after_seconds": 30
+    },
+    {
+      "type": "log_storm",
+      "intensity": 0.70,
+      "duration_seconds": 180,
+      "start_after_seconds": 60
+    }
+  ]
+}

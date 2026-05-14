@@ -58,10 +58,11 @@ services:
     ports:
       - "8880:80"
 
-  # 20 RPM = 0.333 RPS
+  # 5 RPS — enough for Z-score and CIAD invariant learning
   traffic-generator:
     <<: *loadgen-multi
     command: ["/app/traffic"]
     environment:
       TARGET_URL: http://gateway:8080
-      REQUESTS_PER_SECOND: "0.333"
+      REQUESTS_PER_SECOND: "5"
+      BURST_INTERVAL_SECONDS: "600"

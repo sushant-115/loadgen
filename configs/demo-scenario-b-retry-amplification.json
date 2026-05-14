@@ -1,0 +1,23 @@
+{
+  "campaign_id": "demo-b-retry-amplification",
+  "steps": [
+    {
+      "type": "error_injection",
+      "intensity": 0.30,
+      "duration_seconds": 360,
+      "start_after_seconds": 0
+    },
+    {
+      "type": "latency_injection",
+      "intensity": 0.45,
+      "duration_seconds": 300,
+      "start_after_seconds": 60
+    },
+    {
+      "type": "queue_backlog",
+      "intensity": 0.50,
+      "duration_seconds": 240,
+      "start_after_seconds": 90
+    }
+  ]
+}
