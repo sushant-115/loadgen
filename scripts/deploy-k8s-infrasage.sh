@@ -49,7 +49,7 @@ echo "Applying application services..."
 ${KUBECTL_CMD} apply -f k8s-services.yaml
 
 echo "Restarting application workloads for fresh image usage..."
-${KUBECTL_CMD} -n "${NAMESPACE}" rollout restart deployment/gateway deployment/auth-service deployment/user-service deployment/order-service deployment/payment-service deployment/notification-worker deployment/traffic-generator || true
+${KUBECTL_CMD} -n "${NAMESPACE}" rollout restart deployment/gateway deployment/auth-service deployment/user-service deployment/order-service deployment/payment-service deployment/notification-worker deployment/traffic-generator deployment/mock-shopify || true
 
 echo "Restarting collector to pick up secret/env changes..."
 ${KUBECTL_CMD} -n "${NAMESPACE}" rollout restart deployment/otel-collector

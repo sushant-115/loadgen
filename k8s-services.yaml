@@ -482,3 +482,79 @@ spec:
           limits:
             cpu: 1000m
             memory: 512Mi
+
+---
+# Mock Shopify Deployment (fake Shopify store + webhook emitter)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-shopify
+  namespace: loadgen
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mock-shopify
+  template:
+    metadata:
+      labels:
+        app: mock-shopify
+    spec:
+      serviceAccountName: loadgen
+      containers:
+      - name: mock-shopify
+        image: loadgen:latest
+        imagePullPolicy: Never
+        args: ["/app/mock-shopify"]
+        ports:
+        - containerPort: 8086
+        env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "otel-collector.loadgen.svc.cluster.local:4317"
+        - name: OTEL_INSECURE
+          value: "true"
+        - name: OTEL_SERVICE_NAME
+          value: mock-shopify
+        - name: SERVICE_PORT
+          value: "8086"
+        - name: INFRASAGE_BASE_URL
+          value: "https://api.infrasage.dev"
+        - name: SHOPIFY_SHOPS
+          value: "acme.myshopify.com:stripe,globex.myshopify.com:paypal,initech.myshopify.com:adyen"
+        - name: SHOPIFY_WEBHOOKS_PER_MINUTE
+          value: "90"
+        - name: SHOPIFY_BASELINE_DECLINE_RATE
+          value: "0.04"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8086
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8086
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 250m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+
+---
+# Mock Shopify Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-shopify
+  namespace: loadgen
+spec:
+  selector:
+    app: mock-shopify
+  ports:
+  - port: 8080
+    targetPort: 8086
