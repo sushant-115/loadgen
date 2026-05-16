@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/loadgen/internal/chaos"
+	"github.com/loadgen/internal/ecom"
 	"github.com/loadgen/internal/middleware"
 	"github.com/loadgen/internal/shopify"
 	"github.com/loadgen/internal/sysstate"
@@ -44,6 +45,13 @@ func main() {
 	go store.RunMutator(ctx)
 	go emitter.Run(ctx)
 
+	// Synthetic bounded-cardinality ecommerce KPI metrics + unified anomaly
+	// injector (conversion/pricing/fulfilment/returns/search/…).
+	ecomInjector := ecom.NewInjector()
+	if err := ecom.NewEmitter(ecomInjector).Start(ctx); err != nil {
+		slog.Warn("ecom metrics start failed (continuing)", "error", err)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /admin/api/2024-01/products.json", shopify.HandleProducts(store))
 	mux.HandleFunc("GET /admin/api/2024-01/orders.json", shopify.HandleOrders(store))
@@ -57,6 +65,7 @@ func main() {
 	mux.Handle("GET /metrics", telemetry.PrometheusHandler())
 	chaos.RegisterChaosEndpoints(mux)
 	sysstate.RegisterEndpoints(mux)
+	ecom.RegisterEndpoints(mux, ecomInjector)
 
 	handler := middleware.Chain(serviceName, slog.Default(), mux)
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: handler}
