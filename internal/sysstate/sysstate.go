@@ -22,10 +22,28 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
 	"strings"
 	"sync"
 	"time"
 )
+
+// autoIncidents gates the epoch-scheduled (periodic/automated) anomaly engine.
+// It is OFF by default: anomalies only occur when explicitly invoked via the
+// injection scripts (ForceScenario / the chaos API). Set
+// LOADGEN_AUTO_INCIDENTS=true to restore the periodic epoch schedule.
+var (
+	autoIncidentsOnce sync.Once
+	autoIncidentsVal  bool
+)
+
+func autoIncidentsEnabled() bool {
+	autoIncidentsOnce.Do(func() {
+		v := strings.ToLower(strings.TrimSpace(os.Getenv("LOADGEN_AUTO_INCIDENTS")))
+		autoIncidentsVal = v == "true" || v == "1" || v == "yes"
+	})
+	return autoIncidentsVal
+}
 
 // ---------------------------------------------------------------------------
 // Force override — in-process manual anomaly injection
@@ -326,6 +344,9 @@ func healthAt(t time.Time) float64 {
 		// Forced: expose peak health immediately (no ramp, already in crisis).
 		return fi.PeakHealth
 	}
+	if !autoIncidentsEnabled() {
+		return 1.0 // periodic injection disabled — only manual/script anomalies
+	}
 	epochStart := t.Truncate(epochDuration)
 	epochNum := epochStart.Unix() / int64(epochDuration.Seconds())
 	ed := epochInfo(epochNum)
@@ -384,6 +405,9 @@ func activeFaultsAt(t time.Time) FaultType {
 func stateNameAt(t time.Time) string {
 	if fi := forcedIncident(); fi != nil {
 		return "critical" // forced scenarios are immediately at peak
+	}
+	if !autoIncidentsEnabled() {
+		return "normal" // periodic injection disabled
 	}
 	epochStart := t.Truncate(epochDuration)
 	epochNum := epochStart.Unix() / int64(epochDuration.Seconds())

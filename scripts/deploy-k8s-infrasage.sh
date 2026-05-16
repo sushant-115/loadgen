@@ -35,7 +35,23 @@ if [[ "${BUILD_IMAGE}" == "true" ]]; then
 
   echo "Importing ${IMAGE_NAME} into k3s containerd..."
   sudo docker save "${IMAGE_NAME}" | sudo k3s ctr images import -
+
+  # sagent replaces the OTEL collector. Build it locally and import into k3s
+  # (the otel-collector Deployment now runs image sagent:latest / pullPolicy
+  # Never). SAGENT_DIR defaults to a sibling checkout of the sagent repo.
+  SAGENT_DIR="${SAGENT_DIR:-${ROOT_DIR}/../sagent}"
+  if [[ -d "${SAGENT_DIR}" ]]; then
+    echo "Building sagent:latest from ${SAGENT_DIR}..."
+    sudo docker build -f "${SAGENT_DIR}/deploy/docker/Dockerfile" -t sagent:latest "${SAGENT_DIR}"
+    echo "Importing sagent:latest into k3s containerd..."
+    sudo docker save sagent:latest | sudo k3s ctr images import -
+  else
+    echo "WARNING: SAGENT_DIR=${SAGENT_DIR} not found — skipping sagent build (otel-collector pod will fail to start)"
+  fi
 fi
+
+echo "Ensuring namespace ${NAMESPACE} exists..."
+${KUBECTL_CMD} create namespace "${NAMESPACE}" --dry-run=client -o yaml | ${KUBECTL_CMD} apply -f -
 
 echo "Applying infrastructure manifests..."
 ${KUBECTL_CMD} apply -f k8s-deployment.yaml

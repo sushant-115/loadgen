@@ -12,56 +12,41 @@ metadata:
   name: otel-collector-config
   namespace: loadgen
 data:
+  # sagent config (replaces the OTEL Collector). otlp_in receives the loadgen
+  # services' OTLP on 4317/4318; batched and forwarded to InfraSage. The API
+  # key is injected from the infrasage-credentials secret via ${INFRASAGE_API_KEY}.
+  # NOTE: the previous collector also fanned out to local jaeger/loki/prometheus
+  # — those local views are intentionally dropped; the demo uses the InfraSage UI.
   config.yaml: |
-    receivers:
-      otlp:
-        protocols:
-          grpc:
-            endpoint: 0.0.0.0:4317
-          http:
-            endpoint: 0.0.0.0:4318
+    agent:
+      name: "loadgen-sagent"
+      mode: agent
+
+    api:
+      listen: "0.0.0.0:8080"
+
+    sources:
+      otlp_in:
+        type: otlp
+        grpc:
+          listen: "0.0.0.0:4317"
+        http:
+          listen: "0.0.0.0:4318"
 
     processors:
-      batch:
-        timeout: 5s
-        send_batch_size: 512
+      batch_main:
+        type: batch
+        timeout: 2s
+        max_size: 1000
+        sources: [otlp_in]
 
-    exporters:
-      prometheus:
-        endpoint: 0.0.0.0:8889
-
-      otlp/jaeger:
-        endpoint: jaeger.loadgen.svc.cluster.local:4317
-        tls:
-          insecure: true
-
-      loki:
-        endpoint: http://loki.loadgen.svc.cluster.local:3100/loki/api/v1/push
-
-      otlphttp/infrasage:
-        endpoint: https://api.infrasage.dev
-        encoding: json
-        compression: none
-        headers:
-          "X-API-Key": "${env:INFRASAGE_API_KEY}"
-
-      debug:
-        verbosity: basic
-
-    service:
-      pipelines:
-        traces:
-          receivers: [otlp]
-          processors: [batch]
-          exporters: [otlp/jaeger, otlphttp/infrasage]
-        metrics:
-          receivers: [otlp]
-          processors: [batch]
-          exporters: [prometheus, otlphttp/infrasage]
-        logs:
-          receivers: [otlp]
-          processors: [batch]
-          exporters: [loki, otlphttp/infrasage]
+    sinks:
+      infrasage_out:
+        type: otlp
+        endpoint: "https://api.infrasage.dev"
+        protocol: http
+        auth_header: "Bearer ${INFRASAGE_API_KEY}"
+        sources: [batch_main]
 
 ---
 # ConfigMap for Prometheus scrape config
@@ -298,28 +283,39 @@ spec:
     spec:
       containers:
       - name: otel-collector
-        image: otel/opentelemetry-collector-contrib:0.96.0
+        # sagent (built locally + imported into k3s; see deploy script).
+        image: sagent:latest
+        imagePullPolicy: Never
+        args: ["-config", "/etc/agent/config.yaml"]
         ports:
         - containerPort: 4317
           name: grpc
         - containerPort: 4318
           name: http
-        - containerPort: 8888
-          name: metrics
-        - containerPort: 8889
-          name: prometheus
+        - containerPort: 8080
+          name: admin
         volumeMounts:
         - name: config
-          mountPath: /etc/otelcol-contrib
+          mountPath: /etc/agent
           readOnly: true
         env:
-        - name: GOGC
-          value: "80"
         - name: INFRASAGE_API_KEY
           valueFrom:
             secretKeyRef:
               name: infrasage-credentials
               key: api-key
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
       volumes:
       - name: config
         configMap:
