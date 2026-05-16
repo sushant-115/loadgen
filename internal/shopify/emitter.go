@@ -8,9 +8,25 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 )
+
+// orderHasProduct reports whether any line item's title matches target
+// (case-insensitive substring; target should be lowercased).
+func orderHasProduct(o *Order, target string) bool {
+	if target == "" {
+		return false
+	}
+	for _, li := range o.LineItems {
+		if strings.Contains(strings.ToLower(li.Title), target) ||
+			strings.Contains(strings.ToLower(li.ProductType), target) {
+			return true
+		}
+	}
+	return false
+}
 
 // Emitter drains the store's event channel, applies the active incident
 // transform, and POSTs Shopify-shaped webhooks to InfraSage.
@@ -19,10 +35,12 @@ type Emitter struct {
 	store    *Store
 	client   *http.Client
 	incident *IncidentState
+	slump    *ProductSlumpState
 
 	emitted  atomic.Int64
 	declines atomic.Int64
 	errors   atomic.Int64
+	slumped  atomic.Int64
 }
 
 // NewEmitter creates an Emitter with a 5s HTTP timeout.
@@ -32,6 +50,7 @@ func NewEmitter(cfg Config, store *Store) *Emitter {
 		store:    store,
 		client:   &http.Client{Timeout: 5 * time.Second},
 		incident: &IncidentState{},
+		slump:    &ProductSlumpState{},
 	}
 }
 
@@ -51,6 +70,17 @@ func (e *Emitter) Run(ctx context.Context) {
 
 // applyIncident mutates / fans out an event when an incident targets its shop.
 func (e *Emitter) applyIncident(ev Event) []Event {
+	// Product slump: independently of the payment incident, suppress a
+	// fraction of orders containing the targeted product so its REAL
+	// line-item-derived order/revenue metrics visibly drop.
+	if sOn, sShop, sTarget, sFrac := e.slump.Active(); sOn && ev.ShopDomain == sShop &&
+		(ev.Topic == "orders/create" || ev.Topic == "orders/paid") {
+		if o, ok := ev.Payload.(*Order); ok && orderHasProduct(o, sTarget) && rand.Float64() < sFrac {
+			e.slumped.Add(1)
+			return nil // this product (and this order) didn't sell
+		}
+	}
+
 	active, shop, decline, cancel, refund := e.incident.Active()
 	if !active || ev.ShopDomain != shop {
 		return []Event{ev}
