@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
@@ -51,6 +52,7 @@ func Init(serviceName string) (shutdown func(), err error) {
 	// Build common resource.
 	res, err := resource.New(ctx,
 		resource.WithAttributes(semconv.ServiceName(serviceName)),
+		resource.WithAttributes(attribute.String("infrasage_synthetic", "true")),
 		resource.WithProcessRuntimeDescription(),
 		resource.WithHost(),
 	)

@@ -64,6 +64,7 @@ func Tracing(serviceName string, next http.Handler) http.Handler {
 			attribute.Float64("system.health_score", sysstate.HealthScore()),
 			attribute.String("system.state", sysstate.CurrentStateName()),
 			attribute.String("system.active_faults", sysstate.ActiveFaultNames()),
+			attribute.String("infrasage_synthetic", "true"),
 		)
 
 		// Attach business-dimension attributes — only when present, so internal
