@@ -5,6 +5,7 @@ package middleware
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/loadgen/internal/chaos"
@@ -19,6 +20,23 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// routeBucket collapses a request path to a low-cardinality bucket
+// suitable for use as a metric attribute. It returns the first path
+// segment (e.g. "/orders/ORD-12345" → "/orders"). Empty path → "/".
+// Without this collapse, every unique order/product/user ID in the URL
+// would create a new attribute set in the OTel SDK and explode the
+// number of cumulative-counter data points emitted per export tick.
+func routeBucket(path string) string {
+	p := strings.TrimLeft(path, "/")
+	if p == "" {
+		return "/"
+	}
+	if i := strings.IndexByte(p, '/'); i >= 0 {
+		p = p[:i]
+	}
+	return "/" + p
+}
 
 // responseWriter wraps http.ResponseWriter to capture the status code.
 type responseWriter struct {
@@ -98,13 +116,20 @@ func Tracing(serviceName string, next http.Handler) http.Handler {
 
 // Metrics records request count, duration, error count, and active requests
 // using counters registered by telemetry.Init.
+//
+// NOTE: do NOT add the raw request path (r.URL.Path) here — the loadgen
+// uses unique IDs in paths (/orders/ORD-12345, /products/PROD-42…),
+// so attaching the path would create a unique attribute set per
+// request and cause the OTel SDK to emit thousands of cumulative-counter
+// data points per export tick (we saw 6k+ rows / 10s / metric in CH).
+// Use a coarse route bucket (the first path segment) instead.
 func Metrics(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		chaosActive, _, _ := chaos.ActiveMetadata()
 		attrs := attribute.NewSet(
 			attribute.String("http.method", r.Method),
-			attribute.String("http.route", r.URL.Path),
+			attribute.String("http.route", routeBucket(r.URL.Path)),
 			attribute.Bool("chaos.active", chaosActive),
 		)
 
