@@ -7,10 +7,14 @@
 # the same instant, producing perfectly correlated telemetry spikes.
 #
 # Usage:
-#   ./inject-anomaly.sh inject <scenario> [duration_seconds]
+#   ./inject-anomaly.sh inject <scenario> [duration_seconds] [intensity]
 #   ./inject-anomaly.sh clear
 #   ./inject-anomaly.sh status
 #   ./inject-anomaly.sh scenarios
+#
+# intensity (optional, default 1.0, clamped [0.1, 10.0]) multiplies the
+# scenario's configured PeakHealth drop. Use 10.0 for "demo mode" — guarantees
+# the watchdog crosses its alert threshold within ~90s on young tenants.
 #
 # Scenarios:
 #   db_contention           — DB latency ×5-15, error rates climb, cascades to
@@ -116,8 +120,9 @@ do_inject() {
   local pod="$2"
   local scenario="$3"
   local duration="$4"
+  local intensity="${5:-1.0}"
   local resp
-  resp=$(exec_curl "$svc" "$pod" "/anomaly/force?scenario=${scenario}&duration=${duration}" POST)
+  resp=$(exec_curl "$svc" "$pod" "/anomaly/force?scenario=${scenario}&duration=${duration}&intensity=${intensity}" POST)
   local state health faults
   state=$(echo "$resp"  | grep -o '"state":"[^"]*"'   | cut -d'"' -f4 2>/dev/null || echo "?")
   health=$(echo "$resp" | grep -o '"health_score":[0-9.]*' | cut -d: -f2  2>/dev/null || echo "?")
@@ -162,9 +167,10 @@ case "$CMD" in
   inject)
     SCENARIO="${2:-}"
     DURATION="${3:-$DEFAULT_DURATION}"
+    INTENSITY="${4:-1.0}"
     [[ -z "$SCENARIO" ]] && { echo "Error: scenario required"; usage; }
-    echo ">>> Injecting anomaly: scenario='${SCENARIO}' duration=${DURATION}s across all pods..."
-    run_on_all do_inject "$SCENARIO" "$DURATION"
+    echo ">>> Injecting anomaly: scenario='${SCENARIO}' duration=${DURATION}s intensity=${INTENSITY} across all pods..."
+    run_on_all do_inject "$SCENARIO" "$DURATION" "$INTENSITY"
     echo ""
     echo "Anomaly active. Watch signals:"
     echo "  Traces  → Jaeger:     kubectl port-forward svc/jaeger -n $NAMESPACE 16686:16686"

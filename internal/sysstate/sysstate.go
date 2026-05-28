@@ -50,15 +50,21 @@ func autoIncidentsEnabled() bool {
 // ---------------------------------------------------------------------------
 
 // forcedState holds an active manual override. It is nil when the system runs
-// in normal epoch-based mode.
+// in normal epoch-based mode. intensity multiplies the configured PeakHealth
+// drop — intensity=1.0 yields the scenario's stock amplitude (e.g. PeakHealth
+// 0.20 → health drops from 1.0 to 0.20), intensity=10.0 drives PeakHealth far
+// lower and is the founder's "demo mode" setting that guarantees the
+// watchdog organically crosses its alert threshold within ~90s on young
+// tenants where stock amplitudes barely register.
 type forcedState struct {
-	inc   *incident
-	until time.Time
+	inc       *incident
+	until     time.Time
+	intensity float64
 }
 
 var (
-	forceMu    sync.RWMutex
-	forced     *forcedState
+	forceMu sync.RWMutex
+	forced  *forcedState
 )
 
 // ForceScenario locks the system into a named incident scenario for the
@@ -66,9 +72,14 @@ var (
 // telemetry signals (health, faults, latency scaling, error rates) reflect the
 // forced scenario immediately.
 //
+// intensity multiplies the amplitude of the fault: 1.0 is the scenario's
+// configured PeakHealth (current behavior); >1.0 drives health LOWER (more
+// severe). Clamped to [0.1, 10.0]. Pass 1.0 (or 0/negative) for the legacy
+// amplitude.
+//
 // Valid scenario names: db_contention, payment_degradation,
 // auth_service_degradation, network_saturation, memory_pressure.
-func ForceScenario(name string, duration time.Duration) error {
+func ForceScenario(name string, duration time.Duration, intensity float64) error {
 	var found *incident
 	for i := range incidents {
 		if incidents[i].Name == name {
@@ -84,8 +95,18 @@ func ForceScenario(name string, duration time.Duration) error {
 		return fmt.Errorf("unknown scenario %q; valid names: %s", name, strings.Join(names, ", "))
 	}
 
+	if intensity <= 0 {
+		intensity = 1.0
+	}
+	if intensity > 10.0 {
+		intensity = 10.0
+	}
+	if intensity < 0.1 {
+		intensity = 0.1
+	}
+
 	forceMu.Lock()
-	forced = &forcedState{inc: found, until: time.Now().Add(duration)}
+	forced = &forcedState{inc: found, until: time.Now().Add(duration), intensity: intensity}
 	forceMu.Unlock()
 	return nil
 }
@@ -111,11 +132,31 @@ func ForceStatus() map[string]any {
 		}
 	}
 	return map[string]any{
-		"active":        true,
-		"scenario":      forced.inc.Name,
-		"expires":       forced.until.UTC().Format(time.RFC3339),
-		"remaining_sec": int(time.Until(forced.until).Seconds()),
+		"active":               true,
+		"scenario":             forced.inc.Name,
+		"expires":              forced.until.UTC().Format(time.RFC3339),
+		"remaining_sec":        int(time.Until(forced.until).Seconds()),
+		"intensity":            forced.intensity,
+		"effective_peak_health": forcedEffectivePeakHealthLocked(),
 	}
+}
+
+// forcedEffectivePeakHealthLocked computes the peak health value the
+// healthAt path will return under the current forced override + intensity.
+// Caller MUST already hold forceMu (read or write). Returns 1.0 when no
+// override is active.
+func forcedEffectivePeakHealthLocked() float64 {
+	if forced == nil || time.Now().After(forced.until) {
+		return 1.0
+	}
+	pk := forced.inc.PeakHealth / forced.intensity
+	if pk < 0.01 {
+		pk = 0.01
+	}
+	if pk > 1.0 {
+		pk = 1.0
+	}
+	return pk
 }
 
 // ListScenarios returns the names of all available scenarios.
@@ -132,6 +173,12 @@ func ListScenarios() []string {
 func forcedIncident() *incident {
 	forceMu.RLock()
 	defer forceMu.RUnlock()
+	return forcedIncidentLocked()
+}
+
+// forcedIncidentLocked is the lock-already-held variant used by callers
+// that need to consume `forced.intensity` in the same critical section.
+func forcedIncidentLocked() *incident {
 	if forced == nil || time.Now().After(forced.until) {
 		return nil
 	}
@@ -340,9 +387,15 @@ func epochInfo(epochNum int64) epochData {
 // healthAt computes the system health score in [0.0, 1.0] for a moment in time.
 // If a manual force override is active it takes priority over the epoch schedule.
 func healthAt(t time.Time) float64 {
-	if fi := forcedIncident(); fi != nil {
-		// Forced: expose peak health immediately (no ramp, already in crisis).
-		return fi.PeakHealth
+	forceMu.RLock()
+	pk := forcedEffectivePeakHealthLocked()
+	hasForce := forced != nil && !time.Now().After(forced.until)
+	forceMu.RUnlock()
+	if hasForce {
+		// Forced: expose intensity-adjusted peak health immediately (no
+		// ramp, already in crisis). intensity=10 + scenario PeakHealth=0.20
+		// → pk=0.02, well below any threshold the watchdog uses.
+		return pk
 	}
 	if !autoIncidentsEnabled() {
 		return 1.0 // periodic injection disabled — only manual/script anomalies
@@ -451,13 +504,27 @@ func HealthScore() float64 {
 // Use this instead of HealthScore() for per-service probability scaling so that
 // a payment degradation incident does not erroneously degrade the DB or auth.
 func FaultHealth(ft FaultType) float64 {
-	// Check forced override first.
-	if fi := forcedIncident(); fi != nil {
+	// Check forced override first. Intensity-aware: the same divisor used in
+	// healthAt is applied here so per-service signals scale with the demo
+	// intensity setting (otherwise services would degrade by stock amplitude
+	// even when the founder fired the demo at 10×).
+	forceMu.RLock()
+	fi := forcedIncidentLocked()
+	intensity := 1.0
+	if forced != nil {
+		intensity = forced.intensity
+	}
+	forceMu.RUnlock()
+	if fi != nil {
+		pk := fi.PeakHealth / intensity
+		if pk < 0.01 {
+			pk = 0.01
+		}
 		if fi.PrimaryFault == ft {
-			return math.Max(fi.PeakHealth*0.5, 0.01)
+			return math.Max(pk*0.5, 0.01)
 		}
 		if fi.CascadeFaults&ft != 0 {
-			return math.Max(fi.PeakHealth*0.75, 0.01)
+			return math.Max(pk*0.75, 0.01)
 		}
 		return 1.0
 	}

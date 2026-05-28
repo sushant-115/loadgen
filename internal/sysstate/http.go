@@ -9,9 +9,13 @@ import (
 
 // RegisterEndpoints adds anomaly-injection HTTP endpoints to mux.
 //
-//	POST /anomaly/force?scenario=NAME&duration=SECONDS
+//	POST /anomaly/force?scenario=NAME&duration=SECONDS&intensity=N
 //	     Immediately forces the named scenario for the given duration.
 //	     All health/fault probe functions honour the override until expiry.
+//	     intensity (optional, default 1.0, clamped [0.1, 10.0]) multiplies
+//	     the configured PeakHealth drop — 10.0 is "demo mode" amplitude
+//	     that guarantees the watchdog crosses its alert threshold within
+//	     ~90s on young tenants.
 //
 //	POST /anomaly/clear
 //	     Cancels the active forced scenario and returns to epoch-based mode.
@@ -45,7 +49,17 @@ func handleForce(w http.ResponseWriter, r *http.Request) {
 		durSec = n
 	}
 
-	if err := ForceScenario(scenario, time.Duration(durSec)*time.Second); err != nil {
+	intensity := 1.0
+	if s := r.URL.Query().Get("intensity"); s != "" {
+		v, err := strconv.ParseFloat(s, 64)
+		if err != nil || v <= 0 {
+			http.Error(w, `{"error":"intensity must be a positive number (1.0 = stock amplitude, 10.0 = demo mode)"}`, http.StatusBadRequest)
+			return
+		}
+		intensity = v
+	}
+
+	if err := ForceScenario(scenario, time.Duration(durSec)*time.Second, intensity); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
@@ -57,6 +71,7 @@ func handleForce(w http.ResponseWriter, r *http.Request) {
 		"ok":            true,
 		"scenario":      scenario,
 		"duration_sec":  durSec,
+		"intensity":     intensity,
 		"expires":       time.Now().Add(time.Duration(durSec) * time.Second).UTC().Format(time.RFC3339),
 		"health_score":  HealthScore(),
 		"active_faults": ActiveFaultNames(),
