@@ -104,6 +104,14 @@ func (c *InfraSage) PostChange(ctx context.Context, serviceID, kind, version, re
 
 // ── RCA ─────────────────────────────────────────────────────────────────
 
+// ResolveAlert marks one alert resolved — the harness playing the operator
+// closing the page after recovery (also keeps service:severity fingerprint
+// dedup from swallowing the next run's alerts).
+func (c *InfraSage) ResolveAlert(ctx context.Context, alertID string) error {
+	return c.do(ctx, http.MethodPatch, "/api/v1/alerts/"+alertID,
+		map[string]any{"status": "resolved", "actor": "verdict-harness"}, nil)
+}
+
 func (c *InfraSage) TriggerRCA(ctx context.Context, serviceID string, at time.Time) error {
 	return c.do(ctx, http.MethodPost, "/api/v1/rca/analyze", map[string]any{
 		"service_id": serviceID,

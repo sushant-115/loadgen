@@ -210,8 +210,9 @@ func (r *Runner) Run(ctx context.Context, sc Scenario) RunResult {
 	// ── cleanup + cooldown ──────────────────────────────────────────────
 	tc := time.Now()
 	r.killAll(ctx, sc)
+	r.resolveRunAlerts(ctx, injectAt)
 	r.cooldown(ctx, sc)
-	add("cooldown", "pass", "chaos cleared, engine drained", tc)
+	add("cooldown", "pass", "chaos cleared, alerts resolved, engine drained", tc)
 
 	return finish(res)
 }
@@ -472,6 +473,30 @@ func (r *Runner) killAll(ctx context.Context, sc Scenario) {
 }
 
 // cooldown paces the suite: fixed floor + wait for the RCA queue to drain.
+// resolveRunAlerts plays the operator closing the page after recovery: every
+// alert this run caused (fired after injection, blast radius included) is
+// PATCHed to resolved. Without this, alert fingerprints (service:severity)
+// dedup the NEXT run's identical incident into the lingering row — its
+// fired_at never moves and the detect phase times out on a phantom miss.
+func (r *Runner) resolveRunAlerts(ctx context.Context, injectAt time.Time) {
+	alerts, err := r.Infra.FiringAlerts(ctx)
+	if err != nil {
+		slog.Warn("harness: could not list alerts to resolve", "error", err)
+		return
+	}
+	for i := range alerts {
+		a := alerts[i]
+		if !a.FiredAt.After(injectAt.Add(-time.Minute)) {
+			continue
+		}
+		if err := r.Infra.ResolveAlert(ctx, a.ID); err != nil {
+			slog.Warn("harness: resolve alert failed", "alert", a.ID, "error", err)
+			continue
+		}
+		slog.Info("harness: resolved run-scoped alert", "alert", a.ID, "service", a.ServiceID)
+	}
+}
+
 func (r *Runner) cooldown(ctx context.Context, sc Scenario) {
 	floor := time.Duration(sc.Cooldown) * time.Second
 	if floor <= 0 {
