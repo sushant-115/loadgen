@@ -155,7 +155,7 @@ func (r *Runner) Run(ctx context.Context, sc Scenario) RunResult {
 		} else if len(e.OriginAny) > 0 {
 			svc = e.OriginAny[0]
 		}
-		analysis, err := r.runRCA(ctx, svc, injectAt, e)
+		analysis, err := r.runRCA(ctx, svc, injectAt, e, detected)
 		switch {
 		case err != nil:
 			add("rca", "fail", err.Error(), t)
@@ -297,11 +297,31 @@ func (r *Runner) waitForAlert(ctx context.Context, service string, after time.Ti
 	return nil
 }
 
-func (r *Runner) runRCA(ctx context.Context, service string, injectAt time.Time, e *ExpectRCA) (*RCAAnalysis, error) {
+func (r *Runner) runRCA(ctx context.Context, service string, injectAt time.Time, e *ExpectRCA, detected *Alert) (*RCAAnalysis, error) {
 	if service == "" {
 		return nil, fmt.Errorf("rca expectation needs detect.service or origin_any")
 	}
-	if err := r.Infra.TriggerRCA(ctx, service, time.Now().UTC()); err != nil {
+	// Behave like an operator, not a race: wait for the ingest pipeline to
+	// land the onset windows before asking for RCA (see TriggerDelaySeconds).
+	delay := time.Duration(e.TriggerDelaySeconds) * time.Second
+	if e.TriggerDelaySeconds == 0 {
+		delay = 150 * time.Second
+	} else if e.TriggerDelaySeconds < 0 {
+		delay = 0
+	}
+	if delay > 0 {
+		slog.Info("harness: waiting before RCA trigger so aggregates cover the onset", "delay", delay)
+		if !sleepCtx(ctx, delay) {
+			return nil, ctx.Err()
+		}
+	}
+	// Anchor the analysis at the alert's fired_at — that's the timestamp an
+	// operator clicks Analyze from. time.Now() would anchor past the onset.
+	anchor := time.Now().UTC()
+	if detected != nil && !detected.FiredAt.IsZero() {
+		anchor = detected.FiredAt.UTC()
+	}
+	if err := r.Infra.TriggerRCA(ctx, service, anchor); err != nil {
 		return nil, fmt.Errorf("trigger rca: %w", err)
 	}
 	timeout := time.Duration(e.TimeoutSeconds) * time.Second

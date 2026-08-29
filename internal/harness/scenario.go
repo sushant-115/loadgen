@@ -102,6 +102,14 @@ type ExpectRCA struct {
 	// reached the model, not just the database.
 	RequireChangeEvidence bool `yaml:"require_change_evidence"`
 	TimeoutSeconds        int  `yaml:"timeout_seconds"`
+	// TriggerDelaySeconds is how long the harness waits after detection
+	// before triggering RCA (default 150). Aggregates land ~2.5 minutes
+	// behind wall clock; triggering instantly anchors the origin resolver
+	// on windows that don't exist yet and it abstains with "no onset" —
+	// a failure mode no human operator reproduces, since nobody clicks
+	// Analyze within one second of the alert. 0 means default; -1 means
+	// trigger immediately (to deliberately test the too-early path).
+	TriggerDelaySeconds int `yaml:"trigger_delay_seconds"`
 }
 
 type ExpectRemediation struct {
