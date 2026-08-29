@@ -304,9 +304,15 @@ func (r *Runner) runRCA(ctx context.Context, service string, injectAt time.Time,
 	}
 	// Behave like an operator, not a race: wait for the ingest pipeline to
 	// land the onset windows before asking for RCA (see TriggerDelaySeconds).
+	// 240s default: onset windows aggregate ~2.5 min behind wall clock and
+	// the named-metric scorer persists them on its next cycle (~1 min more).
+	// Triggering earlier anchors the origin resolver on score rows that
+	// don't exist yet — verified empirically: identical anchor, RCA at
+	// onset+3min abstained (anchor_no_onset), at onset+9min resolved the
+	// correct origin at 0.6 confidence.
 	delay := time.Duration(e.TriggerDelaySeconds) * time.Second
 	if e.TriggerDelaySeconds == 0 {
-		delay = 150 * time.Second
+		delay = 240 * time.Second
 	} else if e.TriggerDelaySeconds < 0 {
 		delay = 0
 	}
