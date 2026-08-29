@@ -1,0 +1,17 @@
+id: s05-user-memory-slowleak
+title: Memory slow-leak on user service (30 min climb)
+description: >
+  Memory pressure climbing linearly over half an hour — the classic leak.
+  Tests trend/slow-drift detection rather than step detection.
+tags: [detection, subtle, trend]
+inject:
+  - target: user
+    type: memory
+    intensity: 0.7
+    onset: slowleak
+    duration_seconds: 1800
+expect:
+  detect:
+    service: user-service
+    within_seconds: 1800
+cooldown_seconds: 300

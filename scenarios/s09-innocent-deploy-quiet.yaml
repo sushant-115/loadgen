@@ -1,0 +1,20 @@
+id: s09-innocent-deploy-quiet
+title: Innocent deploy, no fault — the false-positive control
+description: >
+  A deploy event with NO chaos behind it. PASS means InfraSage stays
+  quiet for 15 minutes: no alert on payment, no page for a healthy
+  rollout. This is the scenario that keeps the suite honest — a detector
+  tuned to pass everything else by firing eagerly fails here.
+tags: [quiet, change-intel, control]
+setup:
+  changes:
+    - service: payment-service
+      kind: deploy
+      version: v2.14.2
+      ref: "PR #490"
+      summary: "copy change, no behavior delta"
+expect:
+  quiet:
+    service: payment-service
+    within_seconds: 900
+cooldown_seconds: 120

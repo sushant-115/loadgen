@@ -1,0 +1,23 @@
+# General capacity remediation — /ops/scale raises loadgen's simulated
+# replica count, which divides capacity-sensitive fault intensity. The
+# "wrong fix" for s02 (scale doesn't clear a sticky pool fault) — useful
+# for demonstrating that the harness fails runbooks that don't remediate.
+runbook_id: scale-payment
+name: Scale payment service
+description: Scale payment to 3 simulated replicas.
+service_id: payment-service
+tier: T2
+enabled: true
+steps:
+  - step_id: scale
+    name: Scale to 3 replicas
+    skill_id: legacy:http
+    params:
+      url: "http://LOADGEN_HOST:8084/ops/scale"
+      method: "POST"
+      body: '{"replicas": 3}'
+    on_failure: stop
+metadata:
+  author: loadgen
+  author_kind: human
+  notes: "tags: watchdog — capacity remediation"

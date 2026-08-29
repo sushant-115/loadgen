@@ -4,6 +4,8 @@ package middleware
 
 import (
 	"log/slog"
+	"math"
+	"math/rand/v2"
 	"net/http"
 	"strings"
 	"time"
@@ -205,8 +207,52 @@ func boolToString(v bool) string {
 	return "false"
 }
 
-// Chain applies middleware in order: Logging -> Metrics -> Tracing (outermost
-// first so tracing context is available to inner layers).
+// ChaosFaults applies the request-path v2 faults every service inherits
+// through Chain:
+//
+//   - error_budget: a LOW-grade failure rate — effective intensity is the
+//     probability a request 500s (0.02 = 2%). The slow-burn failure that
+//     threshold alerts miss and error-budget detection should catch.
+//   - latency_tail: only the TAIL suffers — scope_percent of requests (set
+//     small, e.g. 0.02) get a large delay scaled by intensity. Moves p99
+//     while barely moving the average; catches detectors that only watch
+//     means.
+//
+// Both read effective intensity through chaos.GetIntensity, so onset
+// shapes (ramp/leak/flap) and /ops remediation apply automatically.
+func ChaosFaults(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Never fault the control planes — chaos must stay steerable and
+		// health checks honest-to-purpose.
+		p := r.URL.Path
+		if strings.HasPrefix(p, "/chaos") || strings.HasPrefix(p, "/ops") || p == "/health" || p == "/healthz" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if eff := chaos.GetIntensity(chaos.LatencyTail); eff > 0 {
+			// GetIntensity already folded scope_percent in; treat the
+			// effective value as (hit probability × severity). Split it:
+			// small chance, big delay.
+			if rand.Float64() < math.Min(0.10, eff) {
+				delay := time.Duration(1500+rand.IntN(2500)) * time.Millisecond
+				time.Sleep(delay)
+			}
+		}
+		if eff := chaos.GetIntensity(chaos.ErrorBudget); eff > 0 {
+			if rand.Float64() < eff {
+				slog.Warn("request failed: upstream dependency returned malformed response",
+					"chaos", true, "fault", "error_budget", "path", routeBucket(p))
+				http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// Chain applies middleware in order: Logging -> Metrics -> Tracing -> ChaosFaults
+// (outermost first so tracing context is available to inner layers, and the
+// injected faults are recorded by metrics/tracing like real failures).
 func Chain(serviceName string, logger *slog.Logger, handler http.Handler) http.Handler {
-	return Logging(logger, Metrics(Tracing(serviceName, handler)))
+	return Logging(logger, Metrics(Tracing(serviceName, ChaosFaults(handler))))
 }

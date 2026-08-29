@@ -1,0 +1,20 @@
+id: s01-payment-latency-step
+title: Payment latency, step onset (sanity)
+description: >
+  The easiest possible catch: a hard 400ms latency step on payment for 10
+  minutes. If this fails, nothing else is worth running — it isolates
+  wiring problems (ingest, alerting) from detection-quality problems.
+tags: [detection, rca, sanity]
+inject:
+  - target: payment
+    type: latency
+    intensity: 0.8
+    duration_seconds: 600
+expect:
+  detect:
+    service: payment-service
+    within_seconds: 300
+  rca:
+    origin_any: [payment-service]
+    evidence_keywords_any: [latency, slow]
+cooldown_seconds: 240

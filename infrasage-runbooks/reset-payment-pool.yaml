@@ -1,0 +1,39 @@
+# Remediation runbook for scenario s02 — clears the sticky db-slow fault
+# via loadgen's /ops/reset-pool. Import into InfraSage (git loader dir or
+# POST /api/v1/runbooks/drafts) and promote; keep tier T2 so the verdict
+# harness exercises the whole approval loop.
+runbook_id: reset-payment-pool
+name: Reset payment DB connection pool
+description: >
+  Recycles the payment service's database connection pool. Use when RCA
+  points at pool exhaustion / DB latency on payment-service.
+service_id: payment-service
+tier: T2
+enabled: true
+steps:
+  - step_id: confirm-impact
+    name: Confirm pool saturation before recycling
+    skill_id: legacy:manual_confirm
+    params:
+      instruction: "Confirm payment p99 / DB latency is still elevated before recycling the pool."
+      timeout_secs: "600"
+    on_failure: stop
+  - step_id: reset-pool
+    name: Recycle the connection pool
+    skill_id: legacy:http
+    params:
+      url: "http://LOADGEN_HOST:8084/ops/reset-pool"
+      method: "POST"
+    depends_on: [confirm-impact]
+    on_failure: stop
+  - step_id: announce
+    name: Announce remediation
+    skill_id: legacy:slack_notify
+    params:
+      message: "payment-service DB pool recycled via runbook reset-payment-pool"
+    depends_on: [reset-pool]
+    on_failure: continue
+metadata:
+  author: loadgen
+  author_kind: human
+  notes: "tags: watchdog probe — pairs with loadgen scenario s02"

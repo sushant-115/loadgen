@@ -1,6 +1,18 @@
-# loadgen — Microservice Simulator
+# loadgen — Production Simulator + InfraSage Verdict Harness
 
-A lightweight microservice simulator that generates production-like OTEL telemetry (traces, metrics, logs). Built for testing observability platforms like InfraSage.
+A microservice fleet that behaves like production (diurnal traffic, coherent
+user journeys, OTel logs/metrics/traces), a chaos engine that fails like
+production (ramps, slow leaks, flapping, partial scopes, low-grade burns —
+not just step functions), and a **verdict harness** that fires graded
+scenarios and interrogates InfraSage's own APIs to score the outcome:
+detected or not, how fast, right origin or wrong, change attributed or
+missed, remediation real or cosmetic.
+
+```
+traffic (journeys × loadshape) → services → OTel collector → InfraSage
+                                    ↑                            ↓
+              verdict harness ── chaos/ops endpoints ── alerts/RCA/runbook APIs
+```
 
 ## Services
 
@@ -12,157 +24,110 @@ A lightweight microservice simulator that generates production-like OTEL telemet
 | order | 8083 | Order management, calls payment-service |
 | payment | 8084 | Payment processing |
 | notification | 8085 | Async notification worker (NATS) |
-| traffic | — | Traffic generator, sends requests to gateway |
+| mock-shopify | — | E-commerce API with injectable KPI incidents |
+| traffic | — | Journey-based traffic generator |
 
-## Chaos Injection
+## Traffic: journeys on a load curve
 
-Each service exposes chaos endpoints to simulate failures:
+`TRAFFIC_MODE=journeys` (default) runs coherent user **sessions** — login →
+browse → order → pay, with lognormal think-times and realistic abandonment —
+launched at a rate that follows a **loadshape curve**: two-humped diurnal
+rhythm, lunch dip, weekend factor, Monday bump, and mean-reverting organic
+noise. During injected incidents traffic *drops* (users bounce; they don't
+5× at the worst moment). Baselines finally learn from honest data.
 
-```
-POST /chaos/errors         {"intensity": 0.9, "duration_seconds": 300}
-POST /chaos/latency        {"intensity": 0.8, "duration_seconds": 300}
-POST /chaos/cpu
-POST /chaos/memory
-POST /chaos/logstorm
+Env knobs: `REQUESTS_PER_SECOND` (base), `LOADSHAPE_DIURNAL_AMPLITUDE`,
+`LOADSHAPE_WEEKEND_FACTOR`, `LOADSHAPE_LUNCH_DIP`, `LOADSHAPE_NOISE_SIGMA`,
+`LOADSHAPE_TIME_COMPRESSION` (24 = a day per hour, for local smoke tests),
+`TRAFFIC_MODE=legacy` restores the old weighted-action loop.
+
+## Chaos v2: shapes, scope, sticky
+
+Every `/chaos/*` endpoint accepts shape fields on top of the legacy
+`{intensity, duration_seconds}`:
+
+```jsonc
 POST /chaos/db-slow
-POST /chaos/queue-backlog
-POST /chaos/pod-crash
-POST /chaos/campaign       {"campaign_id":"...","steps":[...],"dry_run":false}
-POST /chaos/kill-switch
-DELETE /chaos/<type>        # disable
-GET /chaos/status
-```
-
-Notes:
-- `intensity` accepts either ratio (`0.25`) or percentage (`25`).
-- Guardrails cap anomaly duration to 15 minutes per step.
-- `/chaos/status` now includes active types and campaign metadata for correlation.
-
-### Campaign Example
-
-Use [configs/chaos-campaign.example.json](configs/chaos-campaign.example.json):
-
-```bash
-# local/docker
-./scripts/trigger-chaos.sh campaign --file configs/chaos-campaign.example.json
-
-# validate only
-./scripts/trigger-chaos.sh campaign --file configs/chaos-campaign.example.json --dry-run
-
-# scheduled execution (delay in seconds)
-./scripts/trigger-chaos.sh campaign --file configs/chaos-campaign.example.json --schedule-after 120
-
-# adaptive execution (wait until check command exits 0)
-./scripts/trigger-chaos.sh campaign --file configs/chaos-campaign.example.json \
-  --adaptive-check "curl -sf http://localhost:8080/health >/dev/null" --adaptive-poll 10
-```
-
-Kubernetes:
-
-```bash
-./scripts/trigger-chaos-k8s.sh campaign --file configs/chaos-campaign.example.json
-./scripts/trigger-chaos-k8s.sh latency high 60 --service payment-service
-```
-
-### Deploy To K8s With InfraSage Ingest
-
-Use the helper script to apply manifests, upsert secret values, and roll collector:
-
-```bash
-export INFRASAGE_API_KEY=your_key_here
-./scripts/deploy-k8s-infrasage.sh
-```
-
-Notes:
-- Do not commit API keys to this repository.
-- The script creates/updates the Kubernetes secret `infrasage-credentials` at deploy time using `INFRASAGE_API_KEY`.
-
-Optional override:
-
-```bash
-export NAMESPACE=loadgen
-./scripts/deploy-k8s-infrasage.sh
-```
-
-## Deploy to k3s
-
-```bash
-# 1. Build all binaries
-export PATH=$PATH:/usr/local/go/bin
-mkdir -p /tmp/loadgen-build
-for svc in gateway auth user order payment notification traffic; do
-  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/loadgen-build/$svc ./cmd/$svc/
-done
-
-# 2. Create Docker image
-cat > /tmp/loadgen-build/Dockerfile <<'EOF'
-FROM alpine:3.19
-RUN apk add --no-cache ca-certificates tzdata curl
-WORKDIR /app
-COPY gateway auth user order payment notification traffic ./
-EOF
-
-cd /tmp/loadgen-build && docker build -t loadgen:latest .
-
-# 3. Import into k3s
-docker save loadgen:latest | sudo k3s ctr images import -
-
-# 4. Deploy infrastructure (postgres, redis, nats, otel-collector, etc.)
-sudo kubectl apply -f k8s-deployment.yaml
-
-# 5. Deploy services
-sudo kubectl apply -f k8s-services.yaml
-```
-
-## OTEL Telemetry
-
-Services emit traces and metrics via gRPC to port 4317. The included otel-collector config forwards to:
-- **Jaeger** (traces)
-- **Loki** (logs)
-- **Prometheus** (metrics)
-- **InfraSage** (all signals via `otlphttp/infrasage` exporter)
-
-Configure the InfraSage endpoint in `k8s-deployment.yaml` under the otel-collector ConfigMap.
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | OTEL collector gRPC endpoint |
-| `OTEL_SERVICE_NAME` | (per service) | Service name in telemetry |
-| `POSTGRES_DSN` | — | PostgreSQL connection string |
-| `REDIS_URL` | — | Redis connection string |
-| `NATS_URL` | — | NATS connection string |
-| `TARGET_URL` | `http://gateway:8080` | Traffic generator target |
-| `REQUESTS_PER_SECOND` | `10` | Traffic generator RPS |
-| `BURST_INTERVAL_SECONDS` | `300` | Seconds between 5x burst periods |
-| `TRAFFIC_SCENARIO_FILE` | (empty) | Optional path to JSON scenario file for weighted traffic actions |
-
-### Traffic Scenario File
-
-The traffic generator supports a scenario file to model weighted, dependency-aware actions.
-
-Use the default example at `configs/traffic-scenario.default.json`:
-
-```bash
-export TRAFFIC_SCENARIO_FILE=configs/traffic-scenario.default.json
-```
-
-Scenario schema:
-
-```json
 {
-  "name": "default-production-like",
-  "description": "Weighted API traffic with dependency-aware actions",
-  "actions": [
-    { "name": "users_list", "weight": 0.30 },
-    { "name": "users_get", "weight": 0.10 },
-    { "name": "auth_login", "weight": 0.15 },
-    { "name": "auth_verify", "weight": 0.05 },
-    { "name": "orders_create", "weight": 0.20 },
-    { "name": "orders_list", "weight": 0.10 },
-    { "name": "orders_get", "weight": 0.05 },
-    { "name": "users_create", "weight": 0.05 }
-  ]
+  "intensity": 0.7,
+  "duration_seconds": 1200,
+  "onset": "ramp",          // step | ramp | slowleak | flap
+  "ramp_seconds": 300,
+  "flap_period_seconds": 90, // for onset=flap
+  "scope_percent": 0.03,     // fraction of traffic affected
+  "sticky": true             // ignores duration — only /ops/* or kill-switch clears it
 }
 ```
+
+Fault types: the classics (`errors`, `latency`, `cpu`, `memory`, `logstorm`,
+`db-slow`, `queue-backlog`, `pod-crash`) plus three subtle ones —
+`novel-log` (a never-seen log template at low volume — tests shape
+detection, not volume), `error-budget` (2% quiet failure burn), and
+`latency-tail` (p99 moves, the average barely does). Campaigns, kill-switch,
+and `/chaos/status` work as before.
+
+## /ops: remediation that remediates
+
+Each service exposes `/ops/restart`, `/ops/reset-pool`, `/ops/clear-backlog`,
+`/ops/scale {"replicas":N}`, `/ops/status`. Each remediation clears only the
+fault kinds it plausibly fixes (reset-pool clears `db_slow`, nothing else),
+and `scale` divides capacity-sensitive fault intensity. Point an InfraSage
+runbook's `legacy:http` step at these and the propose→approve→execute→
+recover loop becomes **testable**: a sticky fault recovers if and only if
+the right runbook ran. Ready-to-import runbook specs live in
+[`infrasage-runbooks/`](infrasage-runbooks/) (replace `LOADGEN_HOST`).
+
+## The verdict harness
+
+Scenarios in [`scenarios/`](scenarios/) carry their ground truth; `verdict`
+runs them and grades InfraSage:
+
+```bash
+go build -o verdict ./cmd/verdict
+
+export INFRASAGE_BASE_URL=https://api.your-infrasage
+export INFRASAGE_TOKEN=…            # ordinary operator token — the harness plays the human
+export LOADGEN_HOST=http://localhost # or the loadgen host
+
+./verdict list
+./verdict run --id s02-payment-dbslow-ramp-change
+./verdict suite                      # everything, paced, exits non-zero on failure
+./verdict suite --tags detection,subtle --skip-remediation
+./verdict reset                      # kill-switch every fault everywhere
+```
+
+A run walks: preflight (refuses to grade a degraded engine) → change events
+(deploys before faults, so change-attribution is graded) → injection →
+detection watch (latency measured) → RCA (triggered explicitly — the
+no-auto-RCA posture is exercised, not bypassed; rule-based-fallback runs are
+marked `degraded`, never counted as accuracy failures) → remediation
+(manual-trigger + approve via the real APIs, recovery verified on the
+loadgen side) → business KPI check → kill-switch + cooldown (waits for
+InfraSage's RCA queue to drain — pacing is a first-class feature). Output:
+`reports/verdict-<ts>.md` + `.json` scorecards.
+
+The library covers the matrix: a sanity step fault (s01), the flagship
+full-loop deploy→ramp→RCA→remediation (s02), subtle detection (s03 error
+burn, s04 tail latency, s05 slow leak, s07 novel log), alert coherence
+under flapping (s08), the **false-positive control** — an innocent deploy
+that must stay quiet (s09), sticky-backlog remediation (s06), and a
+business-KPI slump with healthy infrastructure (s10).
+
+## BYO-stack parity testbed
+
+The compose/k8s stack already runs Prometheus, Loki, and Jaeger.
+`scripts/federated-testbed.sh` registers them as InfraSage **federated
+sources** (aggregate-pull detection + question-time evidence, no raw
+custody) — then run the same detection scenarios against the federated
+tenant and diff the scorecards against ingest mode.
+
+## Deploy
+
+Local: `docker compose up` (collector forwards to Jaeger/Loki/Prometheus +
+InfraSage via `otlphttp/infrasage`). k3s host: build binaries, import the
+image, `kubectl apply -f k8s-deployment.yaml -f k8s-services.yaml` — or
+`./scripts/deploy-k8s-infrasage.sh` with `INFRASAGE_API_KEY` set (creates
+the `infrasage-credentials` secret; never commit keys). Chaos helpers:
+`./scripts/trigger-chaos.sh`, `./scripts/trigger-chaos-k8s.sh`.
+
+All loadgen telemetry is stamped `infrasage_synthetic=true`.

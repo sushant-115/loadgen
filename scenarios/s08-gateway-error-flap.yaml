@@ -1,0 +1,19 @@
+id: s08-gateway-error-flap
+title: Flapping errors on gateway (90s on/off)
+description: >
+  Errors come and go on a 90-second square wave for 15 minutes — the sick
+  node in and out of rotation. Grades whether detection holds a coherent
+  alert (dedup) instead of firing/resolving dozens of times.
+tags: [detection, noise]
+inject:
+  - target: gateway
+    type: errors
+    intensity: 0.5
+    onset: flap
+    flap_period_seconds: 90
+    duration_seconds: 900
+expect:
+  detect:
+    service: gateway
+    within_seconds: 600
+cooldown_seconds: 240

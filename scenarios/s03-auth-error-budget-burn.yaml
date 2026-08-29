@@ -1,0 +1,17 @@
+id: s03-auth-error-budget-burn
+title: Low-grade error burn on auth (2.5% for 20 min)
+description: >
+  The failure thresholds miss: 2.5% of auth requests fail, quietly, for 20
+  minutes. No storm, no spike — the question is whether baseline-relative
+  detection notices a small but real regression.
+tags: [detection, subtle]
+inject:
+  - target: auth
+    type: error-budget
+    intensity: 0.025
+    duration_seconds: 1200
+expect:
+  detect:
+    service: auth-service
+    within_seconds: 900
+cooldown_seconds: 240

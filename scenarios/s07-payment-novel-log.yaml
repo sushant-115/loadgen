@@ -1,0 +1,17 @@
+id: s07-payment-novel-log
+title: Novel log template at low volume
+description: >
+  A never-before-seen error template appears ~12 times/minute on payment —
+  no volume spike, no metric movement. Tests template-novelty detection
+  specifically; if only volume detectors exist, this stays invisible.
+tags: [detection, logs, subtle]
+inject:
+  - target: payment
+    type: novel-log
+    intensity: 0.4
+    duration_seconds: 1200
+expect:
+  detect:
+    service: payment-service
+    within_seconds: 1200
+cooldown_seconds: 240

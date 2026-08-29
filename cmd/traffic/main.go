@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/loadgen/internal/dimensions"
+	"github.com/loadgen/internal/loadshape"
 	"github.com/loadgen/internal/sysstate"
 	"github.com/loadgen/internal/telemetry"
 	"go.opentelemetry.io/otel"
@@ -155,6 +156,32 @@ func main() {
 
 	client := &http.Client{Timeout: 10 * time.Second}
 
+	// Journey mode (default): coherent user sessions launched on the
+	// diurnal/weekly loadshape curve. TRAFFIC_MODE=legacy restores the
+	// original independent weighted-action loop with periodic 5× bursts.
+	if strings.ToLower(envOrDefault("TRAFFIC_MODE", "journeys")) == "journeys" {
+		shape := loadshape.New(shapeConfigFromEnv(float64(cfg.RequestsPerSecond)))
+		slog.Info("traffic mode: journeys",
+			"base_rps", cfg.RequestsPerSecond,
+			"avg_steps_per_journey", avgStepsPerJourney(),
+			"time_compression", shape.Compression())
+		// Keep the summary printer running in journey mode too.
+		go func() {
+			t := time.NewTicker(30 * time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					globalStats.summarize()
+				}
+			}
+		}()
+		runJourneyMode(ctx, client, cfg, shape)
+		return
+	}
+
 	// Summary printer.
 	summaryTicker := time.NewTicker(30 * time.Second)
 	defer summaryTicker.Stop()
@@ -215,7 +242,14 @@ func main() {
 // ---------- request generation ----------
 
 func sendRequest(ctx context.Context, client *http.Client, baseURL string, picker *actionPicker) {
-	plan := buildPlan(picker.pick(), actors)
+	sendPlanned(ctx, client, baseURL, picker.pick())
+}
+
+// sendPlanned executes one named action — shared by the legacy weighted
+// picker and the journey engine (journey.go), so both modes emit
+// identically-shaped spans, headers, and stats.
+func sendPlanned(ctx context.Context, client *http.Client, baseURL string, action string) {
+	plan := buildPlan(action, actors)
 	if plan.Action == "" {
 		return
 	}

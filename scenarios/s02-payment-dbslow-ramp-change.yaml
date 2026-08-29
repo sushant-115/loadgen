@@ -1,0 +1,38 @@
+id: s02-payment-dbslow-ramp-change
+title: DB degradation ramped after a deploy — the full loop
+description: >
+  The flagship scenario. A deploy event lands 5 minutes before a STICKY
+  db-slow fault ramps in over 5 minutes on payment. Grades the whole
+  product: detection under a gradual onset, RCA origin + evidence, change
+  attribution (the analysis must reference v2.14.1), and genuine
+  remediation — the reset-payment-pool runbook's HTTP step must clear the
+  fault; nothing else will, because it's sticky.
+tags: [detection, rca, change-intel, remediation, flagship]
+setup:
+  changes:
+    - service: payment-service
+      kind: deploy
+      version: v2.14.1
+      ref: "PR #482"
+      summary: "connection pool tuning refactor"
+      lead_seconds: 300
+inject:
+  - target: payment
+    type: db-slow
+    intensity: 0.7
+    onset: ramp
+    ramp_seconds: 300
+    sticky: true
+expect:
+  detect:
+    service: payment-service
+    within_seconds: 600
+  rca:
+    origin_any: [payment-service]
+    evidence_keywords_any: [db, pool, database, latency]
+    require_change_evidence: true
+  remediation:
+    runbook_id: reset-payment-pool
+    target: payment
+    recovers_within_seconds: 300
+cooldown_seconds: 300

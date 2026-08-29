@@ -28,6 +28,17 @@ const (
 	DBSlow           ChaosType = "db_slow"
 	QueueBacklog     ChaosType = "queue_backlog"
 	PodCrash         ChaosType = "pod_crash"
+
+	// v2 subtle faults (shape.go / middleware-applied):
+	// NovelLog emits log lines with never-seen-before templates — exercises
+	// template-novelty detection rather than volume detection.
+	NovelLog ChaosType = "novel_log"
+	// ErrorBudget is a LOW-grade error rate (intensity 0.02 = 2% of
+	// requests fail) — the slow-burn failure threshold alerts miss.
+	ErrorBudget ChaosType = "error_budget"
+	// LatencyTail hits only the tail: a small fraction of requests
+	// (scope_percent) gets a large delay — moves p99, barely moves avg.
+	LatencyTail ChaosType = "latency_tail"
 )
 
 // State holds the runtime state of a single chaos scenario.
@@ -37,6 +48,14 @@ type State struct {
 	Duration  time.Duration `json:"-"`
 	DurationS float64       `json:"duration_seconds"`
 	StartedAt time.Time     `json:"started_at,omitempty"`
+
+	// v2 shape fields (see shape.go). Zero values reproduce legacy
+	// behavior exactly: step onset, full scope, duration-bounded.
+	Onset             string  `json:"onset,omitempty"`
+	RampSeconds       float64 `json:"ramp_seconds,omitempty"`
+	FlapPeriodSeconds float64 `json:"flap_period_seconds,omitempty"`
+	Sticky            bool    `json:"sticky,omitempty"`
+	ScopePercent      float64 `json:"scope_percent,omitempty"`
 }
 
 var (
@@ -50,6 +69,9 @@ var (
 		DBSlow:           {},
 		QueueBacklog:     {},
 		PodCrash:         {},
+		NovelLog:         {},
+		ErrorBudget:      {},
+		LatencyTail:      {},
 	}
 
 	// memoryBallast holds references so the GC cannot reclaim them.
@@ -93,43 +115,11 @@ type CampaignState struct {
 	Running    bool      `json:"running"`
 }
 
-// Enable activates a chaos scenario with the given intensity (0-1) and duration.
+// Enable activates a chaos scenario with the given intensity (0-1) and
+// duration — the legacy step-onset path, now routed through EnableSpec so
+// there is exactly one activation code path.
 func Enable(ct ChaosType, intensity float64, duration time.Duration) {
-	intensity = normalizeIntensity(intensity)
-	duration = normalizeDuration(duration)
-
-	mu.Lock()
-	s, ok := states[ct]
-	if !ok {
-		mu.Unlock()
-		return
-	}
-	s.Enabled = true
-	s.Intensity = intensity
-	s.Duration = duration
-	s.DurationS = duration.Seconds()
-	s.StartedAt = time.Now()
-	mu.Unlock()
-
-	slog.Warn("chaos enabled", "type", string(ct), "intensity", intensity, "duration", duration.String())
-
-	// Fire side-effects.
-	switch ct {
-	case CPUStress:
-		startCPUStress(intensity)
-	case MemoryLeak:
-		startMemoryLeak(intensity, duration)
-	case LogStorm:
-		startLogStorm(intensity, duration)
-	case PodCrash:
-		startPodCrash(duration)
-	}
-
-	// Auto-disable after duration.
-	go func() {
-		time.Sleep(duration)
-		Disable(ct)
-	}()
+	EnableSpec(Spec{Type: ct, Intensity: intensity, Duration: duration, Onset: OnsetStep})
 }
 
 // Disable deactivates a chaos scenario.
@@ -161,7 +151,8 @@ func Disable(ct ChaosType) {
 }
 
 // IsActive returns true if the given chaos type is currently enabled and
-// has not exceeded its duration.
+// has not exceeded its duration. Sticky faults never expire by time —
+// only an explicit Disable (via /ops remediation or kill-switch) ends them.
 func IsActive(ct ChaosType) bool {
 	mu.RLock()
 	defer mu.RUnlock()
@@ -172,21 +163,30 @@ func IsActive(ct ChaosType) bool {
 	if !s.Enabled {
 		return false
 	}
-	if s.Duration > 0 && time.Since(s.StartedAt) > s.Duration {
+	if !s.Sticky && s.Duration > 0 && time.Since(s.StartedAt) > s.Duration {
 		return false
 	}
 	return true
 }
 
-// GetIntensity returns the intensity (0-1) of the given chaos type, or 0 if
-// it is not active.
+// GetIntensity returns the EFFECTIVE intensity (0-1) of the given chaos
+// type at this instant: base intensity × onset shape (ramp/leak/flap
+// progress) × scope fraction ÷ simulated capacity. Because every service
+// call site reads intensity through here, ramps, slow leaks, flapping,
+// partial scope, and scale-out relief all apply everywhere with zero
+// call-site changes.
 func GetIntensity(ct ChaosType) float64 {
 	if !IsActive(ct) {
 		return 0
 	}
 	mu.RLock()
 	defer mu.RUnlock()
-	return states[ct].Intensity
+	s := states[ct]
+	eff := s.Intensity * onsetFactor(s, time.Now())
+	if s.ScopePercent > 0 && s.ScopePercent < 1 {
+		eff *= s.ScopePercent
+	}
+	return eff / capacityFor(ct)
 }
 
 // StatusSnapshot returns a copy of all chaos states for reporting.
@@ -476,6 +476,13 @@ func startPodCrash(delay time.Duration) {
 type chaosRequest struct {
 	Intensity       float64 `json:"intensity"`
 	DurationSeconds float64 `json:"duration_seconds"`
+
+	// v2 shape fields — all optional; omitted = legacy step behavior.
+	Onset             string  `json:"onset"`
+	RampSeconds       float64 `json:"ramp_seconds"`
+	FlapPeriodSeconds float64 `json:"flap_period_seconds"`
+	Sticky            bool    `json:"sticky"`
+	ScopePercent      float64 `json:"scope_percent"`
 }
 
 // RegisterChaosEndpoints adds chaos control handlers to the given ServeMux.
@@ -489,11 +496,18 @@ func RegisterChaosEndpoints(mux *http.ServeMux) {
 		"/chaos/db-slow":       DBSlow,
 		"/chaos/queue-backlog": QueueBacklog,
 		"/chaos/pod-crash":     PodCrash,
+		"/chaos/novel-log":     NovelLog,
+		"/chaos/error-budget":  ErrorBudget,
+		"/chaos/latency-tail":  LatencyTail,
 	}
 
 	for path, ct := range endpoints {
 		mux.HandleFunc(path, makeChaosHandler(ct))
 	}
+
+	// Remediation surface — the endpoints InfraSage runbooks call to
+	// genuinely fix sticky faults (see ops.go).
+	RegisterOpsEndpoints(mux)
 
 	mux.HandleFunc("/chaos/status", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -576,11 +590,20 @@ func makeChaosHandler(ct ChaosType) http.HandlerFunc {
 		}
 
 		dur := time.Duration(req.DurationSeconds * float64(time.Second))
-		Enable(ct, normalizeIntensity(req.Intensity), dur)
+		EnableSpec(Spec{
+			Type:              ct,
+			Intensity:         normalizeIntensity(req.Intensity),
+			Duration:          dur,
+			Onset:             req.Onset,
+			RampSeconds:       req.RampSeconds,
+			FlapPeriodSeconds: req.FlapPeriodSeconds,
+			Sticky:            req.Sticky,
+			ScopePercent:      req.ScopePercent,
+		})
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"status":"enabled","type":"%s","intensity":%.2f,"duration_seconds":%.0f}`,
-			ct, req.Intensity, req.DurationSeconds)
+		fmt.Fprintf(w, `{"status":"enabled","type":"%s","intensity":%.2f,"duration_seconds":%.0f,"onset":%q,"sticky":%t}`,
+			ct, req.Intensity, req.DurationSeconds, orStep(req.Onset), req.Sticky)
 	}
 }

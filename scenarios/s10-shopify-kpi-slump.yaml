@@ -1,0 +1,19 @@
+id: s10-shopify-kpi-slump
+title: Product sales slump — the business layer notices
+description: >
+  Mock-shopify injects a 70% order slump on one product for 20 minutes,
+  with all infrastructure healthy. Grades the business/KPI layer: revenue
+  anomalies should surface even when no service is technically broken.
+tags: [business, kpi]
+inject:
+  - target: shopify
+    path: /incident/product-slump
+    payload:
+      duration_seconds: 1200
+      fraction: 0.7
+      product: "hoodie"
+expect:
+  business:
+    keyword_any: [slump, order, revenue, decline]
+    timeout_seconds: 1200
+cooldown_seconds: 240

@@ -1,0 +1,22 @@
+id: s06-notification-backlog-sticky
+title: Sticky queue backlog + clear-backlog remediation
+description: >
+  The notification queue backs up and STAYS backed up until the
+  clear-notification-backlog runbook hits /ops/clear-backlog. Second
+  remediation-loop scenario with a different fault/fix pairing — a runbook
+  that restarts instead of clearing would fail this on purpose.
+tags: [detection, remediation]
+inject:
+  - target: notification
+    type: queue-backlog
+    intensity: 0.8
+    sticky: true
+expect:
+  detect:
+    service: notification-service
+    within_seconds: 600
+  remediation:
+    runbook_id: clear-notification-backlog
+    target: notification
+    recovers_within_seconds: 240
+cooldown_seconds: 240

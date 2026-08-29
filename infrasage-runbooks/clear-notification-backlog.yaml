@@ -1,0 +1,30 @@
+# Remediation runbook for scenario s06 — clears the sticky queue backlog
+# via loadgen's /ops/clear-backlog.
+runbook_id: clear-notification-backlog
+name: Clear notification queue backlog
+description: >
+  Drains the notification service's queue backlog. Use when queue depth /
+  consumer lag alerts fire on notification-service.
+service_id: notification-service
+tier: T2
+enabled: true
+steps:
+  - step_id: clear
+    name: Drain the backlog
+    skill_id: legacy:http
+    params:
+      url: "http://LOADGEN_HOST:8085/ops/clear-backlog"
+      method: "POST"
+    on_failure: stop
+  - step_id: verify
+    name: Verify consumer caught up
+    skill_id: legacy:manual_confirm
+    params:
+      instruction: "Confirm notification queue depth returned to baseline."
+      timeout_secs: "600"
+    depends_on: [clear]
+    on_failure: stop
+metadata:
+  author: loadgen
+  author_kind: human
+  notes: "tags: watchdog — pairs with loadgen scenario s06"

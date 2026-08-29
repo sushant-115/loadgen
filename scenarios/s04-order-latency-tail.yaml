@@ -1,0 +1,17 @@
+id: s04-order-latency-tail
+title: Tail-only latency on order (p99 moves, average barely)
+description: >
+  Three percent of order requests get a 1.5–4s delay. Mean latency moves a
+  few percent; p99 explodes. Catches detectors that only watch averages.
+tags: [detection, subtle]
+inject:
+  - target: order
+    type: latency-tail
+    intensity: 0.9
+    scope_percent: 0.03
+    duration_seconds: 1200
+expect:
+  detect:
+    service: order-service
+    within_seconds: 900
+cooldown_seconds: 240
