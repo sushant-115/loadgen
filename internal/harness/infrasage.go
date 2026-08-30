@@ -70,12 +70,13 @@ func (c *InfraSage) do(ctx context.Context, method, path string, body any, out a
 // ── Alerts ──────────────────────────────────────────────────────────────
 
 type Alert struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title"`
-	Severity  string    `json:"severity"`
-	Status    string    `json:"status"`
-	ServiceID string    `json:"service_id"`
-	FiredAt   time.Time `json:"fired_at"`
+	ID         string    `json:"id"`
+	Title      string    `json:"title"`
+	Severity   string    `json:"severity"`
+	Status     string    `json:"status"`
+	ServiceID  string    `json:"service_id"`
+	FiredAt    time.Time `json:"fired_at"`
+	DedupCount uint32    `json:"dedup_count"`
 }
 
 // FiringAlerts lists current alerts; the harness filters client-side.

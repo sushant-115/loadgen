@@ -278,7 +278,23 @@ func (r *Runner) inject(ctx context.Context, inj Injection) error {
 }
 
 // waitForAlert polls for a firing alert on a service that fired after t0.
+// waitForAlert accepts two shapes of "the operator got paged": a fresh
+// alert (fired_at after injection), OR an existing firing alert absorbing
+// the incident as dedup occurrences — fingerprints are service:severity,
+// so a pre-incident alert on the same service soaks subsequent fires with
+// fired_at frozen (observed live: 5 in-fault fires deduped into a row
+// fired 2 minutes before injection). The operator sees the alert re-light
+// either way; the harness snapshots dedup counts at phase start and
+// counts an increment as detection.
 func (r *Runner) waitForAlert(ctx context.Context, service string, after time.Time, window time.Duration) *Alert {
+	baselineDedup := map[string]uint32{}
+	if alerts, err := r.Infra.FiringAlerts(ctx); err == nil {
+		for _, a := range alerts {
+			if serviceMatches(a.ServiceID, service) {
+				baselineDedup[a.ID] = a.DedupCount
+			}
+		}
+	}
 	deadline := time.Now().Add(window)
 	for time.Now().Before(deadline) {
 		alerts, err := r.Infra.FiringAlerts(ctx)
@@ -287,7 +303,23 @@ func (r *Runner) waitForAlert(ctx context.Context, service string, after time.Ti
 		}
 		for i := range alerts {
 			a := alerts[i]
-			if serviceMatches(a.ServiceID, service) && a.FiredAt.After(after.Add(-time.Minute)) {
+			if !serviceMatches(a.ServiceID, service) {
+				continue
+			}
+			if a.FiredAt.After(after.Add(-time.Minute)) {
+				return &a
+			}
+			base, seen := baselineDedup[a.ID]
+			switch {
+			case seen && a.DedupCount > base:
+				slog.Info("harness: detection via dedup occurrence on pre-existing alert",
+					"alert", a.ID, "dedup", a.DedupCount, "baseline", base)
+				return &a
+			case !seen:
+				// Transitioned to firing after phase start despite a stale
+				// fired_at (resurrect/race) — the pager lit up now.
+				slog.Info("harness: detection via firing transition of stale-fired_at alert",
+					"alert", a.ID, "fired_at", a.FiredAt)
 				return &a
 			}
 		}
