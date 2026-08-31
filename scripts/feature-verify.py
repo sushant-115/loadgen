@@ -157,6 +157,42 @@ def check_signal_freshness():
         f"{t}={ages[t]}m" for t in sorted(expected))
 
 
+def check_trace_id_encoding():
+    """would_catch: the protobuf bridge writing base64 trace ids
+    ('F1v3zftFM8NfhorIhXFY3A==') where the JSON path writes hex, so the
+    same span carried two different ids depending on its sender.
+
+    Nothing failed loudly: rows arrived, counts looked healthy, and only
+    correlation — trace lookup, log-to-trace joins, topology
+    co-occurrence — quietly stopped matching across the boundary.
+    """
+    rows = ch("SELECT telemetry_type, "
+              "countIf(match(trace_id, '^[0-9a-f]{32}$')) AS hex, "
+              "countIf(trace_id != '' AND NOT match(trace_id, '^[0-9a-f]{32}$')) AS bad "
+              "FROM infrasage_raw_firehose "
+              # 2 minutes: enough volume to be meaningful, short enough
+              # that a rollout in progress does not straddle the window
+              # and report its own pre-upgrade rows as a failure.
+              "WHERE timestamp > now() - INTERVAL 2 MINUTE "
+              "AND telemetry_type IN ('trace','log') AND trace_id != '' "
+              "GROUP BY telemetry_type")
+    if rows == "":
+        return SKIP, "no trace-correlated rows in the last 2m"
+
+    problems, seen = [], []
+    for line in rows.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        sig, hex_n, bad_n = parts[0], int(parts[1]), int(parts[2])
+        seen.append(f"{sig}={hex_n} hex")
+        if bad_n > 0:
+            problems.append(f"{sig}: {bad_n} non-hex ids (of {hex_n + bad_n})")
+    if problems:
+        return FAIL, ("ids are not canonical hex — " + "; ".join(problems))
+    return PASS, "all trace ids canonical hex: " + ", ".join(seen)
+
+
 def check_integration_catalog():
     """would_catch: console showing 6 hard-coded providers while the
     platform supported 30."""
@@ -380,6 +416,7 @@ def check_alert_rules_engine():
 
 FAST = [
     ("signal_freshness", check_signal_freshness),
+    ("trace_id_encoding", check_trace_id_encoding),
     ("integration_catalog", check_integration_catalog),
     ("counter_temporality", check_counter_temporality),
     ("histogram_percentiles", check_histogram_percentiles),
